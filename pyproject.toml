@@ -1,0 +1,20 @@
+[project]
+name = "async_adc"
+dynamic = ["version"]
+dependencies = ["pigpio"]
+
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.package-data]
+bms_gateway = ["*.toml"]
+
+[tool.setuptools_scm]
+# No config needed but section must be present
+
+[tool.ruff.lint]
+select = ["ALL"]
+
+[tool.ruff]
+line-length = 120
