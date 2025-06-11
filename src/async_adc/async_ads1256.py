@@ -1,11 +1,19 @@
+"""Async implementation of ADS1256 and ADS1255 ADC driver for Raspberry Pi."""
+
+from __future__ import annotations
+
 import logging
 import time
-from typing import ClassVar, Self
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from typing import ClassVar, Self
 
 import pigpio
 
-from .ads1256_default_config import ADS1256Config
-from .ads1256_definitions import Flags, Inputs, Registers, Commands
+from .ads1256_config import ADS1256Config
+from .ads1256_definitions import Commands, MuxFlags, Registers, StatusFlags
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +51,9 @@ class ADS1256:
 
         Hardware pin configuration must be set at initialization phase.
         Register/Configuration Flag settings are initialized, but these
-        can be changed during runtime via class properties.
-        Default config is read from external file (module).
+        can be changed during runtime.
+
+        Config settings are read from ads1256_config.py.
         """
         self.conf = conf
         # Set up the pigpio object if not provided as an argument
@@ -58,85 +67,33 @@ class ADS1256:
         if not self.pi.connected:
             msg = "Could not connect to hardware via pigpio library"
             raise OSError(msg)
-
-        # Configure GPIOs
-        # For configuration of multiple SPI devices on this bus:
-        if conf.CS_PIN in self.exclusive_pins_used:
-            self.stop_close_all()
-            msg = "CS pin already used. Must be exclusive!"
-            raise ValueError(msg)
-        self.exclusive_pins_used[conf.CS_PIN] = conf.CS_PIN
-        # In order for the SPI bus to work at all, the chip select lines of
-        # all slave devices on the bus must be initialized and set to inactive
-        # level from the beginning. CS for all chips are given in config:
-        if conf.CS_PIN not in conf.CHIP_SELECT_GPIOS_INITIALIZE:
-            msg = "Chip select pins for all devices on the bus must be listed in config: CHIP_SELECT_GPIOS_INITIALIZE"
-            raise ValueError(msg)
-        # Initializing all chip select lines as input every time.
-        for pin in conf.CHIP_SELECT_GPIOS_INITIALIZE:
-            self._init_input(pin, pigpio.PUD_UP, "chip select")
-        if conf.DRDY_PIN in self.exclusive_pins_used:
-            self.stop_close_all()
-            msg = "Config error: DRDY pin already used. Must be exclusive!"
-            raise ValueError(msg)
-        # DRDY_PIN is the only GPIO input used by this ADC except from SPI pins
-        if conf.DRDY_PIN is not None:
-            self._init_input(conf.DRDY_PIN, pigpio.PUD_DOWN, "data ready")
-        # GPIO Outputs. If chip select pin is set to None, the
-        # respective ADC input pin is assumed to be hardwired to GND.
-        self._init_output(conf.RESET_PIN, pigpio.HIGH, "reset")
-        self._init_output(conf.PDWN_PIN, pigpio.HIGH, "power down")
-
-        # Configure SPI registers
-        logger.debug("Activating SPI, SW chip select on GPIO: %s", conf.CS_PIN)
-        # The ADS1256 uses SPI MODE=1 <=> CPOL=0, CPHA=1.
-        #             bbbbbbRTnnnnWAuuupppmm
-        spi_flags = 0b0000000000000011100001
-        if conf.SPI_BUS == 1:
-            #              bbbbbbRTnnnnWAuuupppmm
-            spi_flags |= 0b0000000000000100000000
-        # PIGPIO library returns a numeric handle for each chip on this bus.
-        try:
-            self.spi_handle = self.pi.spi_open(0, conf.SPI_FREQUENCY, spi_flags)
-            self.check_chip_id()
-        except Exception as e:
-            logger.exception("SPI open error")
-            self.stop_close_all()
-            raise e from None
-        # Add to class attribute
-        self.open_spi_handles[self.spi_handle] = self.spi_handle
-        logger.debug("Obtained SPI device handle: %s", self.spi_handle)
-
+        # Configure interfaces
+        self._configure_gpios(conf)
+        self._configure_spi(conf)
         # Device reset for defined initial state
         if conf.CHIP_HARD_RESET_ON_START:
             self.hard_reset()
         else:
             self.reset()
-
-        # Configure ADC registers:
-        # Status register not yet set, only variable written to avoid multiple
-        # triggering of the AUTOCAL procedure by changing other register flags
-        self._status = conf.status
-        self.mux = conf.mux
-        self.write_reg(Registers.ADCON, conf.adcon)
-        # FIXME: set PGA gain
-        self.set_pga_gain(conf.pga_gain)
-        self.drate = conf.drate
-        self.gpio = conf.gpio
-        self.status = conf.status
+        # Configure ADC hardware registers
+        self._configure_adc_registers(conf)
 
     def __enter__(self) -> Self:
-        """Async context manager."""
+        """Async context manager entry method."""
         return self
 
-    def __exit__(self, _exc_type, _exc_value, _traceback) -> None:
-        """Async context manager."""
-        if _exc_type is not None:
+    def __exit__(self, exc_type: type[BaseException] | None, *_: object) -> None:
+        """Async context manager exit method."""
+        if exc_type is not None:
             self.stop_close_all()
         else:
             self.stop()
 
     def check_chip_id(self) -> None:
+        """Check if chip ID read via SPI matches the value defined in config.
+
+        This raises a RuntimeError when the check fails.
+        """
         chip_id = self.get_chip_id()
         logger.debug("Chip ID: %s", chip_id)
         if chip_id != self.conf.CHIP_ID:
@@ -149,8 +106,8 @@ class ADS1256:
         logger.debug("Closing SPI handle: %s", self.spi_handle)
         self.pi.spi_close(self.spi_handle)
         self.open_spi_handles.pop(self.spi_handle)
-        self.exclusive_pins_used.pop(self._CS_PIN)
-        self.exclusive_pins_used.pop(self._DRDY_PIN)
+        self.exclusive_pins_used.pop(self.conf.CS_PIN)
+        self.exclusive_pins_used.pop(self.conf.DRDY_PIN)
         if self.created_pigpio:
             logger.debug("Closing PIGPIO instance")
             self.pi.stop()
@@ -176,7 +133,7 @@ class ADS1256:
         defined in file ADS1256_definitions.py.
 
         Note: When changing the gain setting at runtime, with activated
-        ACAL flag (AUTOCAL_ENABLE), this causes a _wait_DRDY() timeout
+        ACAL flag (AUTOCAL_ENABLE), this causes a _wait_drdy() timeout
         for the calibration process to finish.
         """
         self.pga_gain = value
@@ -185,10 +142,10 @@ class ADS1256:
             msg = "Argument must be one of: 1, 2, 4, 8, 16, 32, 64"
             raise ValueError(msg)
         log2val = int.bit_length(value) - 1
-        adcon = self.read_reg(Registers.ADCON) & 0b11111000 | log2val
-        self.write_reg(Registers.ADCON, adcon)
-        if self._status & Flags.AUTOCAL_ENABLE:
-            self._wait_DRDY()
+        adcon = self.read_regs(Registers.ADCON)
+        self.write_regs(Registers.ADCON, adcon & 0b11111000 | log2val)
+        if self._status & StatusFlags.AUTOCAL_ENABLE:
+            self._wait_drdy()
 
     def get_v_per_digit(self) -> float:
         """Get ADC LSB weight in volts per numeric output digit.
@@ -214,8 +171,7 @@ class ADS1256:
 
         Example: set_mux(POS_AIN4 | NEG_AINCOM)
 
-        IMPORTANT:
-        When switching inputs during a running conversion cycle,
+        IMPORTANT: When switching inputs during a running conversion cycle,
         invalid data is acquired.
 
         To prevent this, you must restart the conversion using the
@@ -251,15 +207,20 @@ class ADS1256:
         The available data rates are defined in ADS1256_definitions.py.
         """
         self.write_reg(Registers.DRATE, value)
-        if self._status & Flags.AUTOCAL_ENABLE:
-            self._wait_DRDY()
+        if self._status & StatusFlags.AUTOCAL_ENABLE:
+            self._wait_drdy()
 
     @property
-    def ofc(self):
+    def ofc(self) -> int:
         """Get/Set the three offset compensation registers, OFC0..2.
+
         This property is supposed to be a signed integer value.
         Gets/sets 24-bit two's complement value in three 8-bit-registers.
         """
+        # The result is 24 bits little endian two's complement value by default
+        _count, inbytes = self.pi.spi_read(self.spi_handle, 3)
+        self._chip_release()
+        return int.from_bytes(inbytes, "little", signed=True)
         ofc0 = self.read_reg(Registers.OFC0)
         ofc1 = self.read_reg(Registers.OFC1)
         ofc2 = self.read_reg(Registers.OFC2)
@@ -318,89 +279,91 @@ class ADS1256:
 
         Useful to check if hardware is connected.
         """
-        self._wait_DRDY()
-        return self.read_reg(Registers.STATUS) >> 4
+        self._wait_drdy()
+        return self.read_regs(Registers.STATUS) >> 4
 
     def read_regs(self, register_start: int, count: int = 1) -> bytes:
-        """Return data byte from the specified register."""
+        """Return data bytes from the specified registers."""
         self._chip_select()
-        self.pi.spi_write(self.spi_handle, [Commands.RREG | register_start, count])
-        time.sleep(self._DATA_TIMEOUT)
-        count, inbytes = self.pi.spi_read(self.spi_handle, count)
+        self.pi.spi_write(self.spi_handle, (Commands.RREG | register_start, count))
+        time.sleep(self.conf.DATA_TIMEOUT)
+        inbytes = self.pi.spi_read(self.spi_handle, count)[1]
         # Release chip select and implement t_11 timeout
         self._chip_release()
         return inbytes
 
-    def write_regs(self, data: bytes, register_start: int, count: int = 1) -> None:
-        """Write data byte to the specified registers."""
+    def write_regs(self, data: bytes, register_start: int) -> None:
+        """Write data bytes to the specified registers."""
         self._chip_select()
-        self.pi.spi_write(self.spi_handle, [Commands.WREG | register_start, count, data])
+        bytes_out = bytes((Commands.WREG | register_start, len(data))) + data
+        self.pi.spi_write(self.spi_handle, bytes_out)
         # Release chip select and implement t_11 timeout
         self._chip_release()
 
-    def cal_self_offset(self):
-        """Perform an input zero calibration using chip-internal
-        reference switches.
+    def read_int24(self, register_start: int) -> int:
+        """Read a signed 24-bit integer beginning at register_start."""
+        self._chip_select()
+        self.pi.spi_write(self.spi_handle, (Commands.RREG | register_start, 3))
+        time.sleep(self.conf.DATA_TIMEOUT)
+        inbytes = self.pi.spi_read(self.spi_handle, 3)[1]
+        self._chip_release()
+        return int.from_bytes(inbytes, "little", signed=True)
+
+    def write_int24(self, value: int, register_start: int) -> None:
+        """Write a signed 24-bit integer beginning at register_start."""
+        self._chip_select()
+        bytes_out = bytes((Commands.WREG | register_start, 3))
+        bytes_out += int.to_bytes(value, 3, "little", signed=True)
+        self.pi.spi_write(self.spi_handle, bytes_out)
+        self._chip_release()
+
+    def cal_self_offset(self) -> None:
+        """Perform an input zero calibration using chip-internal reference switches.
 
         Sets the ADS1255/ADS1256 OFC register.
         """
-        self._chip_select()
-        self.pi.spi_write(self.spi_handle, [Commands.SELFOCAL])
-        self._wait_DRDY()
-        # Release chip select and implement t_11 timeout
-        self._chip_release()
+        self._send_cmd(Commands.SELFOCAL)
 
-    def cal_self_gain(self):
-        """Perform an input full-scale calibration
-        using chip-internal circuitry connected to VREFP and VREFN.
+    def cal_self_gain(self) -> None:
+        """Perform an input full-scale calibration.
+
+        This uses the chip-internal circuitry connected to VREFP and VREFN.
 
         Sets the ADS1255/ADS1256 FSC register.
         """
-        self._chip_select()
-        self.pi.spi_write(self.spi_handle, [Commands.SELFGCAL])
-        self._wait_DRDY()
-        # Release chip select and implement t_11 timeout
-        self._chip_release()
+        self._send_cmd(Commands.SELFGCAL)
 
-    def cal_self(self):
-        """Perform an input zero and full-scale two-point-calibration
-        using chip-internal circuitry connected to VREFP and VREFN.
+    def cal_self(self) -> None:
+        """Perform an input zero and full-scale two-point-calibration.
+
+        This uses the chip-internal circuitry connected to VREFP and VREFN.
 
         Sets the ADS1255/ADS1256 OFC and FSC registers.
         """
-        self._chip_select()
-        self.pi.spi_write(self.spi_handle, [Commands.SELFCAL])
-        self._wait_DRDY()
-        # Release chip select and implement t_11 timeout
-        self._chip_release()
+        self._send_cmd(Commands.SELFCAL)
 
-    def cal_system_offset(self):
-        """Set the ADS1255/ADS1256 OFC register such that the
+    def cal_system_offset(self) -> None:
+        """Perform in-system offset calibration.
+
+        Set the ADS1255/ADS1256 OFC register such that the
         current input voltage corresponds to a zero output value.
         The input multiplexer must be set to the appropriate pins first.
         """
-        self._chip_select()
-        self.pi.spi_write(self.spi_handle, [Commands.SYSOCAL])
-        self._wait_DRDY()
-        # Release chip select and implement t_11 timeout
-        self._chip_release()
+        self._send_cmd(Commands.SYSOCAL)
 
-    def cal_system_gain(self):
-        """Set the ADS1255/ADS1256 FSC register such that the current
+    def cal_system_gain(self) -> None:
+        """Perform in-system gain calibration.
+
+        Set the ADS1255/ADS1256 FSC register such that the current
         input voltage corresponds to a full-scale output value.
         The input multiplexer must be set to the appropriate pins first.
         """
-        self._chip_select()
-        self.pi.spi_write(self.spi_handle, [Commands.SYSGCAL])
-        self._wait_DRDY()
-        # Release chip select and implement t_11 timeout
-        self._chip_release()
+        self._send_cmd(Commands.SYSGCAL)
 
-    def standby(self):
+    def standby(self) -> None:
         """Put chip in low-power standby mode."""
         self._chip_select()
-        self.pi.spi_write(self.spi_handle, [Commands.STANDBY])
-        # Release chip select and implement t_11 timeout
+        self.pi.spi_write(self.spi_handle, Commands.STANDBY.to_bytes())
         self._chip_release()
 
     def wakeup(self) -> None:
@@ -414,18 +377,11 @@ class ADS1256:
 
         Call standby() to enter standby mode again.
         """
-        self._chip_select()
-        self.pi.spi_write(self.spi_handle, [Commands.WAKEUP])
-        # Release chip select and implement t_11 timeout
-        self._chip_release()
+        self._send_cmd(Commands.WAKEUP)
 
     def reset(self) -> None:
         """Reset all registers except CLK0 and CLK1 bits to default values."""
-        self._chip_select()
-        self.pi.spi_write(self.spi_handle, [Commands.RESET])
-        self._wait_DRDY()
-        # Release chip select and implement t_11 timeout
-        self._chip_release()
+        self._send_cmd(Commands.RESET)
 
     def hard_reset(self) -> None:
         """Reset by toggling the hardware pin as configured as "RESET_PIN"."""
@@ -434,14 +390,14 @@ class ADS1256:
             msg = "Reset pin is not configured!"
             raise RuntimeError(msg)
         logger.debug("Performing hard RESET...")
-        self.pi.write(self.conf.RESET_PIN, 0)
+        self.pi.write(self.conf.RESET_PIN, pigpio.LOW)
         time.sleep(100e-6)
-        self.pi.write(self.conf.RESET_PIN, 1)
+        self.pi.write(self.conf.RESET_PIN, pigpio.HIGH)
         # At hardware initialisation, a settling time for the oscillator
         # is necessary before doing any register access.
         # This is approx. 30ms, according to the datasheet.
         time.sleep(0.03)
-        self._wait_DRDY()
+        self._wait_drdy()
 
     def sync(self) -> None:
         """Restart the ADC conversion cycle with a SYNC + WAKEUP.
@@ -454,9 +410,9 @@ class ADS1256:
         flags.
         """
         self._chip_select()
-        self.pi.spi_write(self.spi_handle, [Commands.SYNC])
-        time.sleep(self._SYNC_TIMEOUT)
-        self.pi.spi_write(self.spi_handle, [Commands.WAKEUP])
+        self.pi.spi_write(self.spi_handle, Commands.SYNC.to_bytes())
+        time.sleep(self.conf.SYNC_TIMEOUT)
+        self.pi.spi_write(self.spi_handle, Commands.WAKEUP.to_bytes())
         # Release chip select and implement t_11 timeout
         self._chip_release()
 
@@ -483,7 +439,7 @@ class ADS1256:
         """
         self._chip_select()
         # Wait for data to be ready
-        self._wait_DRDY()
+        self._wait_drdy()
         # Send the read command
         self.pi.spi_write(self.spi_handle, [Commands.RDATA])
         time.sleep(self.conf.DATA_TIMEOUT)
@@ -523,7 +479,7 @@ class ADS1256:
         self.pi.spi_write(self.spi_handle, [Commands.WREG | Registers.MUX, 0x00, diff_channel, Commands.SYNC])
         time.sleep(self._SYNC_TIMEOUT)
         self.pi.spi_write(self.spi_handle, [Commands.WAKEUP])
-        self._wait_DRDY()
+        self._wait_drdy()
         # Read data from ADC, which still returns the /previous/ conversion
         # result from before changing inputs
         self.pi.spi_write(self.spi_handle, [Commands.RDATA])
@@ -555,7 +511,7 @@ class ADS1256:
             which automates the process for cyclic data acquisition.
         """
         self._chip_select()
-        self._wait_DRDY()
+        self._wait_drdy()
         # Setting mux position for next cycle"
         self.pi.spi_write(self.spi_handle, [Commands.WREG | Registers.MUX, 0x00, diff_channel, Commands.SYNC])
         time.sleep(self.conf.SYNC_TIMEOUT)
@@ -572,7 +528,7 @@ class ADS1256:
         self._chip_release()
         return int.from_bytes(inbytes, "big", signed=True)
 
-    def read_continue(self, ch_sequence, ch_buffer=None):
+    def read_continue(self, ch_sequence: Sequence[int], ch_buffer: Sequence[int]) -> None:
         """Continues reading a cyclic sequence of ADC input channel pin pairs.
 
         The first data sample is only valid if the ADC data register contains
@@ -584,17 +540,13 @@ class ADS1256:
         because it does not interrupt an already running and pre-configured
         conversion cycle.
 
-        Argument1:  Tuple (list) of 8-bit code values for differential
+        Argument1:  Sequence of 8-bit integer code values for differential
                     input channel pins to read sequentially in a cycle.
                     (See definitions for the Registers.MUX register)
 
-                    Example:
-                    ch_sequence=(POS_AIN0|NEG_AIN1, POS_AIN2|NEG_AINCOM)
+        Example:    ch_sequence=(POS_AIN0|NEG_AIN1, POS_AIN2|NEG_AINCOM)
 
-        Argument2:  List (array, buffer) of signed integer conversion
-                    results for the sequence of input channels.
-
-        Returns:    List (array, buffer) of signed integer conversion
+        Argument2:  Sequence of signed integer conversion
                     results for the sequence of input channels.
 
         This implements the timing sequence outlined in the ADS1256
@@ -602,31 +554,25 @@ class ADS1256:
         ADS1256 Input Multiplexer" for cyclic data acquisition.
         """
         buf_len = len(ch_sequence)
-        if ch_buffer is None:
-            ch_buffer = [0] * buf_len
         for i in range(0, buf_len):
             ch_buffer[i] = self.read_and_next_is(ch_sequence[(i + 1) % buf_len])
         return ch_buffer
 
-    def read_sequence(self, ch_sequence: list, ch_buffer=None):
-        """Reads a sequence of ADC input channel pin pairs.
+    def read_sequence(self, ch_sequence: Sequence[int], ch_buffer: Sequence[int]) -> None:
+        """Read a sequence of ADC input channel pin pairs.
 
         Restarts and re-syncs the ADC for the first sample.
 
         The time delay resulting from this can be avoided when reading
         the ADC in a cyclical pattern using the read_continue() method.
 
-        Argument1:  Tuple (list) of 8-bit code values for differential
+        Argument1:  Sequence of 8-bit integer code values for differential
                     input channel pins to read sequentially in a cycle.
                     (See definitions for the Registers.MUX register)
 
-                    Example:
-                    ch_sequence=(POS_AIN0|NEG_AIN1, POS_AIN2|NEG_AINCOM)
+        Example:    ch_sequence=(POS_AIN0|NEG_AIN1, POS_AIN2|NEG_AINCOM)
 
-        Argument2:  List (array, buffer) of signed integer conversion
-                    results for the sequence of input channels.
-
-        Returns:    List (array, buffer) of signed integer conversion
+        Argument2:  Sequence of signed integer conversion
                     results for the sequence of input channels.
 
         This implements the timing sequence outlined in the ADS1256
@@ -636,8 +582,6 @@ class ADS1256:
         self.mux = ch_sequence[0]
         self.sync()
         buf_len = len(ch_sequence)
-        if ch_buffer is None:
-            ch_buffer = [0] * buf_len
         for i in range(0, buf_len):
             ch_buffer[i] = self.read_and_next_is(ch_sequence[(i + 1) % buf_len])
         return ch_buffer
@@ -652,37 +596,38 @@ class ADS1256:
     # This delay is also necessary when using the automatic calibration feature
     # (ACAL flag), after every access that changes the PGA gain bits in
     # ADCON register, the DRATE register or the BUFFEN flag in status register.
-    def _wait_DRDY(self):
+    def _wait_drdy(self) -> None:
+        conf = self.conf
         start = time.time()
         elapsed = time.time() - start
         # Waits for DRDY pin to go to active low or _DRDY_TIMEOUT seconds to pass
-        if self._DRDY_PIN is not None:
-            drdy_level = self.pi.read(self._DRDY_PIN)
-            while (drdy_level == 1) and (elapsed < self._DRDY_TIMEOUT):
+        if conf.DRDY_PIN is not None:
+            drdy_level = self.pi.read(conf.DRDY_PIN)
+            while (drdy_level == pigpio.HIGH) and (elapsed < conf.DRDY_TIMEOUT):
                 elapsed = time.time() - start
-                drdy_level = self.pi.read(self._DRDY_PIN)
+                drdy_level = self.pi.read(conf.DRDY_PIN)
                 # Sleep in order to avoid busy wait and reduce CPU load.
-                time.sleep(self._DRDY_DELAY)
-            if elapsed >= self._DRDY_TIMEOUT:
+                time.sleep(conf.DRDY_DELAY)
+            if elapsed >= conf.DRDY_TIMEOUT:
                 logger.warning("Timeout while polling configured DRDY pin!")
         else:
-            time.sleep(self._DRDY_TIMEOUT)
+            time.sleep(conf.DRDY_TIMEOUT)
 
-    def _chip_select(self):
+    def _chip_select(self) -> None:
         # If chip select pin is hardwired to GND, do nothing.
-        if self._CS_PIN is not None:
-            self.pi.write(self._CS_PIN, 0)
+        if self.conf.CS_PIN is not None:
+            self.pi.write(self.conf.CS_PIN, pigpio.LOW)
 
     # Release chip select and implement t_11 timeout
-    def _chip_release(self):
-        if self._CS_PIN is not None:
-            time.sleep(self._CS_TIMEOUT)
-            self.pi.write(self._CS_PIN, 1)
+    def _chip_release(self) -> None:
+        if self.conf.CS_PIN is not None:
+            time.sleep(self.conf.CS_TIMEOUT)
+            self.pi.write(self.conf.CS_PIN, pigpio.HIGH)
         else:
             # The minimum t_11 timeout between commands, see datasheet Figure 1.
-            time.sleep(self._T_11_TIMEOUT)
+            time.sleep(self.conf.T_11_TIMEOUT)
 
-    def _init_output(self, pin: int, init_state: int, name="output") -> None:
+    def _init_output(self, pin: int, init_state: int, name: str = "output") -> None:
         if pin is not None and pin not in self.pins_initialized:
             msg = "Setting as output: %s (%s)"
             logger.debug(msg, pin, name)
@@ -690,10 +635,80 @@ class ADS1256:
             self.pi.write(pin, init_state)
             self.pins_initialized[pin] = pin
 
-    def _init_input(self, pin: int, pullup_mode: int = pigpio.PUD_UP, name="input") -> None:
+    def _init_input(self, pin: int, pullup_mode: int = pigpio.PUD_UP, name: str = "input") -> None:
         if pin is not None and pin not in self.pins_initialized:
             msg = "Setting as output: %s (%s)"
             logger.debug(msg, pin, name)
             self.pi.set_mode(pin, pigpio.INPUT)
             self.pi.set_pull_up_down(pin, pullup_mode)
             self.pins_initialized[pin] = pin
+
+    def _configure_spi(self, conf: ADS1256Config) -> None:
+        # Configure SPI registers
+        logger.debug("Activating SPI, SW chip select on GPIO: %s", conf.CS_PIN)
+        # The ADS1256 uses SPI MODE=1 <=> CPOL=0, CPHA=1.
+        #             bbbbbbRTnnnnWAuuupppmm
+        spi_flags = 0b0000000000000011100001
+        if conf.SPI_BUS == 1:
+            #              bbbbbbRTnnnnWAuuupppmm
+            spi_flags |= 0b0000000000000100000000
+        # PIGPIO library returns a numeric handle for each chip on this bus.
+        try:
+            self.spi_handle = self.pi.spi_open(conf.SPI_CHANNEL, conf.SPI_FREQUENCY, spi_flags)
+            self.check_chip_id()
+        except Exception as e:
+            logger.exception("SPI open error or wrong hardware setup. Abort.")
+            self.stop_close_all()
+            raise e from None
+        # Add to class attribute
+        self.open_spi_handles[self.spi_handle] = self.spi_handle
+        logger.debug("Obtained SPI device handle: %s", self.spi_handle)
+
+    def _configure_gpios(self, conf: ADS1256Config) -> None:
+        # Configure GPIOs
+        # For configuration of multiple SPI devices on this bus:
+        if conf.CS_PIN in self.exclusive_pins_used:
+            self.stop_close_all()
+            msg = "CS pin already used. Must be exclusive!"
+            raise ValueError(msg)
+        self.exclusive_pins_used[conf.CS_PIN] = conf.CS_PIN
+        # In order for the SPI bus to work at all, the chip select lines of
+        # all slave devices on the bus must be initialized and set to inactive
+        # level from the beginning. CS for all chips are given in config:
+        if conf.CS_PIN not in conf.CHIP_SELECT_GPIOS_INITIALIZE:
+            msg = "Chip select pins for all devices on the bus must be listed in config: CHIP_SELECT_GPIOS_INITIALIZE"
+            raise ValueError(msg)
+        # Initializing all chip select lines as input every time.
+        for pin in conf.CHIP_SELECT_GPIOS_INITIALIZE:
+            self._init_input(pin, pigpio.PUD_UP, "chip select")
+        if conf.DRDY_PIN in self.exclusive_pins_used:
+            self.stop_close_all()
+            msg = "Config error: DRDY pin already used. Must be exclusive!"
+            raise ValueError(msg)
+        # DRDY_PIN is the only GPIO input used by this ADC except from SPI pins
+        if conf.DRDY_PIN is not None:
+            self._init_input(conf.DRDY_PIN, pigpio.PUD_DOWN, "data ready")
+        # GPIO Outputs. If chip select pin is set to None, the
+        # respective ADC input pin is assumed to be hardwired to GND.
+        self._init_output(conf.RESET_PIN, pigpio.HIGH, "reset")
+        self._init_output(conf.PDWN_PIN, pigpio.HIGH, "power down")
+
+    def _configure_adc_registers(self, conf: ADS1256Config) -> None:
+        # Configure ADC registers:
+        # Status register not yet set, only variable written to avoid multiple
+        # triggering of the AUTOCAL procedure by changing other register flags
+        self._status = conf.status
+        self.mux = conf.mux
+        self.write_reg(Registers.ADCON, conf.adcon)
+        # FIXME: set PGA gain
+        self.set_pga_gain(conf.pga_gain)
+        self.drate = conf.drate
+        self.gpio = conf.gpio
+        self.status = conf.status
+
+    def _send_cmd(self, cmd: int) -> None:
+        self._chip_select()
+        self.pi.spi_write(self.spi_handle, cmd.to_bytes())
+        self._wait_drdy()
+        # Release chip select and implement t_11 timeout
+        self._chip_release()

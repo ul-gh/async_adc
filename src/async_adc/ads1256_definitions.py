@@ -1,4 +1,4 @@
-"""CONSTANT DEFINITIONS for ADS1256."""
+"""CONSTANT DEFINITIONS for ADS1256."""  # noqa: N999
 
 from dataclasses import dataclass
 
@@ -18,7 +18,6 @@ class Registers:
     FSC0 = 0x08
     FSC1 = 0x09
     FSC2 = 0x0A
-    NUM_REG = 11
 
 
 @dataclass
@@ -42,7 +41,7 @@ class Commands:
 
 
 @dataclass
-class Inputs:
+class MuxFlags:
     """Input pin definitions for setting REG_MUX.
 
     High nibble selects positive input, low nibble negative input.
@@ -73,12 +72,17 @@ class Inputs:
 
 
 @dataclass
-class Flags:
-    """REG_STATUS: Flags."""
+class StatusFlags:
+    """REG_STATUS Flags."""
 
     BUFFER_ENABLE = 0x02
     AUTOCAL_ENABLE = 0x04
     ORDER_LSB = 0x08
+
+
+@dataclass
+class AdconFlags:
+    """REG_ADCON Flags."""
 
     # REG_ADCON: Gain levels
     # Note: You can set the numeric values 1, 2, 4, 8, 16, 32 and 64 directly
@@ -102,6 +106,11 @@ class Flags:
     CLKOUT_EQUAL = 0x20
     CLKOUT_HALF = 0x40
     CLKOUT_FOURTH = 0x60
+
+
+@dataclass
+class DrateFlags:
+    """REG_DRATE Flags."""
 
     # REG_DRATE: Sample rate definitions:
     DRATE_30000 = 0b11110000  # 30,000SPS (default)
