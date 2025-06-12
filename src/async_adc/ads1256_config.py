@@ -21,10 +21,8 @@ from dataclass_binder import Binder
 
 from .ads1256_definitions import (
     AdconFlags,
-    Commands,
     DrateFlags,
     MuxFlags,
-    Registers,
     StatusFlags,
 )
 

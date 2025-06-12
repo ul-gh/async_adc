@@ -14,9 +14,12 @@ import pigpio
 
 # This module only implements ADS1256 so this is imported as module-wide setting
 from .ads1256_config import ADS1256Config as Conf
-from .ads1256_definitions import Commands, MuxFlags, Registers, StatusFlags
+from .ads1256_definitions import Commands, Registers, StatusFlags
 
 logger = logging.getLogger(__name__)
+
+INT24_MIN = -0x800000
+INT24_MAX = 0x7FFFFF
 
 
 class ADS1256:
@@ -123,6 +126,11 @@ class ADS1256:
         logger.debug("Closing PIGPIO instance")
         self.pi.stop()
 
+    def get_pga_gain(self) -> int:
+        """Get ADC programmable gain amplifier setting."""
+        gain_bits = 0b111 & self._read_reg_uint8(Registers.ADCON)
+        return 2**gain_bits
+
     def set_pga_gain(self, value: int) -> None:
         """Set ADC programmable gain amplifier setting.
 
@@ -142,9 +150,10 @@ class ADS1256:
             msg = "Argument must be one of: 1, 2, 4, 8, 16, 32, 64"
             raise ValueError(msg)
         log2val = int.bit_length(value) - 1
-        adcon = self.read_regs(Registers.ADCON)
-        self.write_regs(Registers.ADCON, adcon & 0b11111000 | log2val)
-        if self._status & StatusFlags.AUTOCAL_ENABLE:
+        adcon_old = self._read_reg_uint8(Registers.ADCON)
+        self._write_reg_uint8(Registers.ADCON, adcon_old & 0b11111000 | log2val)
+        status_flags = self._read_reg_uint8(Registers.STATUS)
+        if status_flags & StatusFlags.AUTOCAL_ENABLE:
             self._wait_drdy()
 
     def get_v_per_digit(self) -> float:
@@ -153,11 +162,11 @@ class ADS1256:
         Readonly: This is a convenience value calculated from
         gain and v_ref setting.
         """
-        return Conf.v_ref * 2.0 / (self.pga_gain * (2**23 - 1))
+        return Conf.v_ref * 2.0 / (self.get_pga_gain() * (2**23 - 1))
 
     def get_mux(self) -> int:
         """Get value of ADC analog input multiplexer register."""
-        return self.read_reg(Registers.MUX)
+        return self._read_reg_uint8(Registers.MUX)
 
     def set_mux(self, value: int) -> None:
         """Set value of ADC analog input multiplexer register.
@@ -189,11 +198,12 @@ class ADS1256:
             for reading a succession of multiple channels at once, configuring
             all input channels including the first one for each cycle
         """
-        self.write_reg(Registers.MUX, value)
+        self._write_reg_uint8(Registers.MUX, value)
+        self.sync()
 
     def get_drate(self) -> int:
         """Get value of the ADC output sample data rate (reads DRATE register)."""
-        return self.read_reg(Registers.DRATE)
+        return self._read_reg_uint8(Registers.DRATE)
 
     def set_drate(self, value: int) -> None:
         """Set value of the ADC output sample data (writes to DRATE register).
@@ -206,73 +216,35 @@ class ADS1256:
 
         The available data rates are defined in ADS1256_definitions.py.
         """
-        self.write_reg(Registers.DRATE, value)
-        if self._status & StatusFlags.AUTOCAL_ENABLE:
+        self._write_reg_uint8(Registers.DRATE, value)
+        status_flags = self._read_reg_uint8(Registers.STATUS)
+        if status_flags & StatusFlags.AUTOCAL_ENABLE:
             self._wait_drdy()
 
-    @property
-    def ofc(self) -> int:
-        """Get/Set the three offset compensation registers, OFC0..2.
-
-        This property is supposed to be a signed integer value.
-        Gets/sets 24-bit two's complement value in three 8-bit-registers.
-        """
+    def get_ofc(self) -> int:
+        """Get the offset compensation registers value, reading OFC0..2."""
         # The result is 24 bits little endian two's complement value by default
-        _count, inbytes = self.pi.spi_read(self.spi_handle, 3)
-        self._chip_release()
-        return int.from_bytes(inbytes, "little", signed=True)
-        ofc0 = self.read_reg(Registers.OFC0)
-        ofc1 = self.read_reg(Registers.OFC1)
-        ofc2 = self.read_reg(Registers.OFC2)
-        int24_result = ofc2 << 16 | ofc1 << 8 | ofc0
-        # Take care of 24-Bit 2's complement.
-        if int24_result < 0x800000:
-            return int24_result
-        else:
-            return int24_result - 0x1000000
+        return self._read_reg_int24(Registers.OFC0)
 
-    @ofc.setter
-    def ofc(self, value):
-        value = int(value)
-        if value < -0x800000 or value > 0x7FFFFF:
+    def set_ofc(self, value: int) -> None:
+        """Set the offset compensation registers value, setting OFC0..2."""
+        if value < INT24_MIN or value > INT24_MAX:
             self.stop_close_all()
-            raise ValueError("Error: Offset value out of signed int24 range")
-        else:
-            # Generate 24-Bit 2's complement.
-            if value < 0:
-                value += 0x1000000
-            # self._send_byte() automatically truncates to uint8
-            self.write_reg(Registers.OFC0, value)
-            value >>= 8
-            self.write_reg(Registers.OFC1, value)
-            value >>= 8
-            self.write_reg(Registers.OFC2, value)
+            msg = "Error: Offset value out of signed int24 range"
+            raise ValueError(msg)
+        self._write_reg_int24(Registers.OFC0, value)
 
-    @property
-    def fsc(self):
-        """Get/Set the three full-scale adjustment registers, OFC0..2.
+    def get_fsc(self) -> int:
+        """Get the full-scale adjustment registers value, reading OFC0..2."""
+        return self._read_reg_int24(Registers.FSC0)
 
-        This property is supposed to be a positive integer value.
-        Gets/sets 24-bit unsigned int value in three 8-bit-registers.
-        """
-        fsc0 = self.read_reg(Registers.FSC0)
-        fsc1 = self.read_reg(Registers.FSC1)
-        fsc2 = self.read_reg(Registers.FSC2)
-        return fsc2 << 16 | fsc1 << 8 | fsc0
-
-    @fsc.setter
-    def fsc(self, value):
-        value = int(value)
-        if value < 0 or value > 0xFFFFFF:
+    def set_fsc(self, value: int) -> None:
+        """Set the full-scale adjustment registers value, setting OFC0..2."""
+        if value < 0 or value > INT24_MAX:
             self.stop_close_all()
-            raise ValueError("Error: This must be a positive int in 24-bit range")
-        else:
-            # self._send_byte() automatically truncates to uint8
-            self.write_reg(Registers.FSC0, value)
-            value >>= 8
-            self.write_reg(Registers.FSC1, value)
-            value >>= 8
-            self.write_reg(Registers.FSC2, value)
+            msg = "Error: Offset value must be positive in signed int24 range."
+            raise ValueError(msg)
+        self._write_reg_int24(Registers.FSC0, value)
 
     def get_chip_id(self) -> int:
         """Get the numeric ID from the ADS chip.
@@ -280,42 +252,7 @@ class ADS1256:
         Useful to check if hardware is connected.
         """
         self._wait_drdy()
-        return self.read_regs(Registers.STATUS) >> 4
-
-    def read_regs(self, register_start: int, count: int = 1) -> bytes:
-        """Return data bytes from the specified registers."""
-        self._chip_select()
-        self.pi.spi_write(self.spi_handle, (Commands.RREG | register_start, count))
-        time.sleep(Conf.DATA_TIMEOUT)
-        inbytes = self.pi.spi_read(self.spi_handle, count)[1]
-        # Release chip select and implement t_11 timeout
-        self._chip_release()
-        return inbytes
-
-    def write_regs(self, data: bytes, register_start: int) -> None:
-        """Write data bytes to the specified registers."""
-        self._chip_select()
-        bytes_out = bytes((Commands.WREG | register_start, len(data))) + data
-        self.pi.spi_write(self.spi_handle, bytes_out)
-        # Release chip select and implement t_11 timeout
-        self._chip_release()
-
-    def read_int24(self, register_start: int) -> int:
-        """Read a signed 24-bit integer beginning at register_start."""
-        self._chip_select()
-        self.pi.spi_write(self.spi_handle, (Commands.RREG | register_start, 3))
-        time.sleep(Conf.DATA_TIMEOUT)
-        inbytes = self.pi.spi_read(self.spi_handle, 3)[1]
-        self._chip_release()
-        return int.from_bytes(inbytes, "little", signed=True)
-
-    def write_int24(self, value: int, register_start: int) -> None:
-        """Write a signed 24-bit integer beginning at register_start."""
-        self._chip_select()
-        bytes_out = bytes((Commands.WREG | register_start, 3))
-        bytes_out += int.to_bytes(value, 3, "little", signed=True)
-        self.pi.spi_write(self.spi_handle, bytes_out)
-        self._chip_release()
+        return self._read_reg_uint8(Registers.STATUS) >> 4
 
     def cal_self_offset(self) -> None:
         """Perform an input zero calibration using chip-internal reference switches.
@@ -416,38 +353,6 @@ class ADS1256:
         # Release chip select and implement t_11 timeout
         self._chip_release()
 
-    def read_async(self) -> int:
-        """Read ADC result as soon as possible.
-
-        Arguments:  None
-        Returns:    Signed integer ADC conversion result
-
-        Issue this command to read a single conversion result for a
-        previously set /and stable/ input channel configuration.
-
-        For the default, free-running mode of the ADC, this means
-        invalid data is returned when not synchronising acquisition
-        and input channel configuration changes.
-
-        To avoid this, after changing input channel configuration or
-        with an external hardware multiplexer, use the hardware SYNC
-        input pin or use the sync() method to restart the
-        conversion cycle before calling read_async().
-
-        Because this function does not implicitly restart a running
-        acquisition, it is faster that the read_oneshot() method.
-        """
-        self._chip_select()
-        # Wait for data to be ready
-        self._wait_drdy()
-        # Send the read command
-        self.pi.spi_write(self.spi_handle, [Commands.RDATA])
-        time.sleep(Conf.DATA_TIMEOUT)
-        # The result is 24 bits little endian two's complement value by default
-        _count, inbytes = self.pi.spi_read(self.spi_handle, 3)
-        self._chip_release()
-        return int.from_bytes(inbytes, "big", signed=True)
-
     def read_oneshot(self, diff_channel: int) -> int:
         """Restart/re-sync ADC and read the specified input pin pair.
 
@@ -476,21 +381,53 @@ class ADS1256:
         """
         self._chip_select()
         # Set input pin mux position for this cycle"
-        self.pi.spi_write(self.spi_handle, [Commands.WREG | Registers.MUX, 0x00, diff_channel, Commands.SYNC])
-        time.sleep(self._SYNC_TIMEOUT)
-        self.pi.spi_write(self.spi_handle, [Commands.WAKEUP])
+        self.pi.spi_write(self.spi_handle, (Commands.WREG | Registers.MUX, 0x00, diff_channel, Commands.SYNC))
+        time.sleep(Conf.SYNC_TIMEOUT)
+        self.pi.spi_write(self.spi_handle, (Commands.WAKEUP,))
         self._wait_drdy()
         # Read data from ADC, which still returns the /previous/ conversion
         # result from before changing inputs
-        self.pi.spi_write(self.spi_handle, [Commands.RDATA])
-        time.sleep(self._DATA_TIMEOUT)
+        self.pi.spi_write(self.spi_handle, (Commands.RDATA,))
+        time.sleep(Conf.DATA_TIMEOUT)
         # The result is 24 bits little endian two's complement value by default
-        _count, inbytes = self.pi.spi_read(self.spi_handle, 3)
+        inbytes = self.pi.spi_read(self.spi_handle, 3)[1]
         self._chip_release()
-        return int.from_bytes(inbytes, "big", signed=True)
+        return int.from_bytes(inbytes, "little", signed=True)
 
-    def read_and_next_is(self, diff_channel: int) -> int:
-        """Read ADC data and set next pair of input channels.
+    def read_result(self) -> int:
+        """Read previously started ADC conversion result.
+
+        Arguments:  None
+        Returns:    Signed integer ADC conversion result
+
+        Issue this command to read a single conversion result for a
+        previously set /and stable/ input channel configuration.
+
+        For the default, free-running mode of the ADC, this means
+        invalid data is returned when not synchronising acquisition
+        and input channel configuration changes.
+
+        To avoid this, after changing input channel configuration or
+        with an external hardware multiplexer, use the hardware SYNC
+        input pin or use the sync() method to restart the
+        conversion cycle before calling read_async().
+
+        Because this function does not implicitly restart a running
+        acquisition, it is faster that the read_oneshot() method.
+        """
+        self._chip_select()
+        # Wait for data to be ready
+        self._wait_drdy()
+        # Send the read command
+        self.pi.spi_write(self.spi_handle, (Commands.RDATA,))
+        time.sleep(Conf.DATA_TIMEOUT)
+        # The result is 24 bits little endian two's complement value by default
+        inbytes = self.pi.spi_read(self.spi_handle, 3)[1]
+        self._chip_release()
+        return int.from_bytes(inbytes, "little", signed=True)
+
+    def read_result_set_next_inputs(self, diff_channel: int) -> int:
+        """Read previously started ADC conversion result and set next pair of input channels.
 
         This reads data from finished or still running ADC conversion, and sets
         and synchronises new input channel config for next sequential read.
@@ -513,78 +450,56 @@ class ADS1256:
         self._chip_select()
         self._wait_drdy()
         # Setting mux position for next cycle"
-        self.pi.spi_write(self.spi_handle, [Commands.WREG | Registers.MUX, 0x00, diff_channel, Commands.SYNC])
+        self.pi.spi_write(self.spi_handle, (Commands.WREG | Registers.MUX, 0x00, diff_channel, Commands.SYNC))
         time.sleep(Conf.SYNC_TIMEOUT)
-        self.pi.spi_write(self.spi_handle, [Commands.WAKEUP])
+        self.pi.spi_write(self.spi_handle, (Commands.WAKEUP,))
         # The datasheet is a bit unclear if a t_11 timeout is needed here.
         # Assuming the extra timeout is the safe choice:
         time.sleep(Conf.T_11_TIMEOUT)
         # Read data from ADC, which still returns the /previous/ conversion
         # result from before changing inputs
-        self.pi.spi_write(self.spi_handle, [Commands.RDATA])
+        self.pi.spi_write(self.spi_handle, (Commands.RDATA,))
         time.sleep(Conf.DATA_TIMEOUT)
         # The result is 24 bits little endian two's complement value by default
-        _count, inbytes = self.pi.spi_read(self.spi_handle, 3)
+        inbytes = self.pi.spi_read(self.spi_handle, 3)[1]
         self._chip_release()
-        return int.from_bytes(inbytes, "big", signed=True)
+        return int.from_bytes(inbytes, "little", signed=True)
 
-    def read_continue(self, ch_sequence: Sequence[int], ch_buffer: Sequence[int]) -> None:
+    def init_cycle(self, ch_sequence: Sequence[int]) -> None:
+        """Set up a sequence of ADC input channel pin pairs and trigger conversion.
+
+        This re-starts and re-syncs the ADC for the first sample.
+
+        The results for a whole cycle can then be repeatedly read using the
+        read_cycle() method.
+
+        Argument1:  Sequence of 8-bit integer code values for differential
+                    input channel pins to read sequentially in a cycle.
+                    (See definitions for the Registers.MUX register)
+        Example:    ch_sequence=(POS_AIN0|NEG_AIN1, POS_AIN2|NEG_AINCOM)
+        """
+        self.set_mux(ch_sequence[0])
+
+    def read_cycle(self, ch_sequence: Sequence[int], ch_buffer: Sequence[int]) -> None:
         """Continues reading a cyclic sequence of ADC input channel pin pairs.
 
-        The first data sample is only valid if the ADC data register contains
-        valid data from a previous conversion. I.e. the last element of the
-        ch_sequence must be the first channel configuration to be read during
-        the next following cycle.
-
-        For short sequences, this is faster than the read_sequence() method
-        because it does not interrupt an already running and pre-configured
-        conversion cycle.
+        The cycle must be first set up using the init_cycle() method.
+        Otherwise, the first sample likely contains invalid data.
 
         Argument1:  Sequence of 8-bit integer code values for differential
                     input channel pins to read sequentially in a cycle.
                     (See definitions for the Registers.MUX register)
-
         Example:    ch_sequence=(POS_AIN0|NEG_AIN1, POS_AIN2|NEG_AINCOM)
 
-        Argument2:  Sequence of signed integer conversion
-                    results for the sequence of input channels.
+        Argument2:  Buffer for the output samples, whih are signed 24-bit int.
 
         This implements the timing sequence outlined in the ADS1256
         datasheet (Sept.2013) on page 21, figure 19: "Cycling the
         ADS1256 Input Multiplexer" for cyclic data acquisition.
         """
         buf_len = len(ch_sequence)
-        for i in range(0, buf_len):
-            ch_buffer[i] = self.read_and_next_is(ch_sequence[(i + 1) % buf_len])
-        return ch_buffer
-
-    def read_sequence(self, ch_sequence: Sequence[int], ch_buffer: Sequence[int]) -> None:
-        """Read a sequence of ADC input channel pin pairs.
-
-        Restarts and re-syncs the ADC for the first sample.
-
-        The time delay resulting from this can be avoided when reading
-        the ADC in a cyclical pattern using the read_continue() method.
-
-        Argument1:  Sequence of 8-bit integer code values for differential
-                    input channel pins to read sequentially in a cycle.
-                    (See definitions for the Registers.MUX register)
-
-        Example:    ch_sequence=(POS_AIN0|NEG_AIN1, POS_AIN2|NEG_AINCOM)
-
-        Argument2:  Sequence of signed integer conversion
-                    results for the sequence of input channels.
-
-        This implements the timing sequence outlined in the ADS1256
-        datasheet (Sept.2013) on page 21, figure 19: "Cycling the
-        ADS1256 Input Multiplexer" for cyclic data acquisition.
-        """
-        self.mux = ch_sequence[0]
-        self.sync()
-        buf_len = len(ch_sequence)
-        for i in range(0, buf_len):
-            ch_buffer[i] = self.read_and_next_is(ch_sequence[(i + 1) % buf_len])
-        return ch_buffer
+        for i in range(buf_len):
+            ch_buffer[i] = self.read_result_set_next_inputs(ch_sequence[(i + 1) % buf_len])
 
     # Delays until the configured DRDY input pin is pulled to
     # active logic low level by the ADS1256 hardware or until the
@@ -696,13 +611,11 @@ class ADS1256:
         # Configure ADC registers:
         # Status register not yet set, only variable written to avoid multiple
         # triggering of the AUTOCAL procedure by changing other register flags
-        self._status = Conf.status
         self.mux = Conf.mux
         self.write_reg(Registers.ADCON, Conf.adcon)
         # FIXME: set PGA gain
         self.set_pga_gain(Conf.pga_gain)
         self.drate = Conf.drate
-        self.gpio = Conf.gpio
         self.status = Conf.status
 
     def _send_cmd(self, cmd: int) -> None:
@@ -710,4 +623,55 @@ class ADS1256:
         self.pi.spi_write(self.spi_handle, cmd.to_bytes())
         self._wait_drdy()
         # Release chip select and implement t_11 timeout
+        self._chip_release()
+
+    def _read_reg_bytes(self, register_start: int, count: int = 1) -> bytes:
+        """Return data bytes from the specified registers."""
+        self._chip_select()
+        self.pi.spi_write(self.spi_handle, (Commands.RREG | register_start, count))
+        time.sleep(Conf.DATA_TIMEOUT)
+        inbytes = self.pi.spi_read(self.spi_handle, count)[1]
+        # Release chip select and implement t_11 timeout
+        self._chip_release()
+        return inbytes
+
+    def _write_reg_bytes(self, register_start: int, data: bytes) -> None:
+        """Write data bytes to the specified registers."""
+        self._chip_select()
+        bytes_out = bytes((Commands.WREG | register_start, len(data))) + data
+        self.pi.spi_write(self.spi_handle, bytes_out)
+        # Release chip select and implement t_11 timeout
+        self._chip_release()
+
+    def _read_reg_uint8(self, register: int) -> int:
+        """Read an unsigned 8-bit integer from register."""
+        self._chip_select()
+        self.pi.spi_write(self.spi_handle, (Commands.RREG | register, 1))
+        time.sleep(Conf.DATA_TIMEOUT)
+        inbytes = self.pi.spi_read(self.spi_handle, 1)[1]
+        self._chip_release()
+        return inbytes[0]
+
+    def _write_reg_uint8(self, register: int, value: int) -> None:
+        """Write an unsigned 8-bit integer to register."""
+        self._chip_select()
+        bytes_out = bytes((Commands.WREG | register, 1, value))
+        self.pi.spi_write(self.spi_handle, bytes_out)
+        self._chip_release()
+
+    def _read_reg_int24(self, register_start: int) -> int:
+        """Read a signed 24-bit integer beginning at register_start."""
+        self._chip_select()
+        self.pi.spi_write(self.spi_handle, (Commands.RREG | register_start, 3))
+        time.sleep(Conf.DATA_TIMEOUT)
+        inbytes = self.pi.spi_read(self.spi_handle, 3)[1]
+        self._chip_release()
+        return int.from_bytes(inbytes, "little", signed=True)
+
+    def _write_reg_int24(self, register_start: int, value: int) -> None:
+        """Write a signed 24-bit integer beginning at register_start."""
+        self._chip_select()
+        bytes_out = bytes((Commands.WREG | register_start, 3))
+        bytes_out += int.to_bytes(value, 3, "little", signed=True)
+        self.pi.spi_write(self.spi_handle, bytes_out)
         self._chip_release()
