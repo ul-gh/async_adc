@@ -8,8 +8,6 @@ To create multiple class instances for more than one AD converter, a unique
 configuration must be specified for each instance.
 """
 
-from __future__ import annotations
-
 import logging
 import sys
 from pathlib import Path
@@ -19,13 +17,9 @@ import toml
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from async_adc.ads1256_definitions import (
-    AdconClock,
-    AdconGain,
-    AdconSensorDetect,
+    AdconFlags,
     DrateFlags,
-    MuxReg,
-    MuxRegNeg,
-    MuxRegPos,
+    MuxFlags,
     StatusFlags,
 )
 
@@ -97,12 +91,6 @@ class ADS1256Config(BaseSettings):
     # Analog reference voltage between VREFH and VREFN pins
     v_ref: float = 2.5
 
-    # Gain seting of the integrated programmable amplifier. This value must be
-    # one of 1, 2, 4, 8, 16, 32, 64.
-    # Gain = 1, V_ref = 2.5V ==> full-scale input voltage = 5.00V, corresponding
-    # to a 24-bit two's complement output value of 2**23 - 1 = 8388607
-    pga_gain: AdconGain = AdconGain.GAIN_1
-
     ####################  ADS1256 Default Register Settings  ###################
     # REG_STATUS:
     # When enabling the AUTOCAL flag: Any following operation that changes
@@ -114,13 +102,18 @@ class ADS1256Config(BaseSettings):
 
     # REG_MUX:
     # Default: positive input = AIN0, negative input = AINCOM
-    mux: MuxReg = MuxReg(pos=MuxRegPos.POS_AIN0, neg=MuxRegNeg.NEG_AINCOM)
+    mux: MuxFlags = MuxFlags.POS_AIN0 | MuxFlags.NEG_AINCOM
 
     # REG_ADCON:
-    # Disable clk out signal (if not needed, source of disturbance),
-    # sensor detect current sources disabled:
-    sensor_detect_current: AdconSensorDetect = AdconSensorDetect.SDCS_OFF
-    adcon_clock: AdconClock = AdconClock.CLKOUT_OFF
+    # Gain seting of the integrated programmable amplifier. This value must be
+    # one of 1, 2, 4, 8, 16, 32, 64.
+    # Gain = 1, V_ref = 2.5V ==> full-scale input voltage = 5.00V, corresponding
+    # to a 24-bit two's complement output value of 2**23 - 1 = 8388607
+    pga_gain: AdconFlags = AdconFlags.GAIN_1
+    # Disable sensor detect current sources
+    sensor_detect: AdconFlags = AdconFlags.SDCS_OFF
+    # Disable clk out signal (if not needed, source of disturbance)
+    clock_output: AdconFlags = AdconFlags.CLKOUT_OFF
 
     # REG_DRATE:
     # 10 SPS places a filter zero at 50 Hz and 60 Hz for line noise rejection

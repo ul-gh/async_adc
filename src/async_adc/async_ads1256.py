@@ -1,16 +1,10 @@
 """Async implementation of ADS1256 and ADS1255 ADC driver for Raspberry Pi."""
 # ruff: noqa: S101
 
-from __future__ import annotations
-
-from abc import ABC
 import logging
 import time
-from typing import TYPE_CHECKING, Literal
-
-if TYPE_CHECKING:
-    from collections.abc import Sequence
-    from typing import ClassVar, Self, Tuple
+from collections.abc import Sequence
+from typing import ClassVar, Literal, Self
 
 import pigpio  # pyright:ignore[reportMissingTypeStubs]
 
@@ -112,10 +106,10 @@ class ADS1256:
         logger.debug("Closing SPI handle: %s", self.spi_handle)
         self.pi.spi_close(self.spi_handle)
         self.open_spi_handles.remove(self.spi_handle)
-        pin = Conf.CS_PIN
-        assert isinstance(pin, int)
-        self.exclusive_pins_used.remove(pin)
-        self.exclusive_pins_used.remove(Conf.DRDY_PIN)
+        exclusive_pins = (Conf.CS_PIN, Conf.DRDY_PIN)
+        for pin in exclusive_pins:
+            if pin is not None:
+                self.exclusive_pins_used.remove(pin)
         if self.created_pigpio:
             logger.debug("Closing PIGPIO instance")
             self.pi.stop()
@@ -387,7 +381,8 @@ class ADS1256:
         self._chip_select()
         # Set input pin mux position for this cycle"
         self.pi.spi_write(
-            self.spi_handle, (Commands.WREG | Registers.MUX, 0x00, diff_channel, Commands.SYNC)
+            self.spi_handle,
+            (Commands.WREG | Registers.MUX, 0x00, diff_channel, Commands.SYNC),
         )
         time.sleep(Conf.SYNC_TIMEOUT)
         self.pi.spi_write(self.spi_handle, (Commands.WAKEUP,))
@@ -614,7 +609,10 @@ class ADS1256:
                 msg = "CS pin already used. Must be exclusive!"
                 raise ValueError(msg)
             if Conf.CS_PIN not in Conf.CHIP_SELECT_GPIOS_INITIALIZE:
-                msg = "Chip select pins for all devices on the bus must be listed in config: CHIP_SELECT_GPIOS_INITIALIZE"
+                msg = (
+                    "Chip select pins for all devices on the bus must be"
+                    "listed in config: CHIP_SELECT_GPIOS_INITIALIZE"
+                )
                 raise ValueError(msg)
             self.exclusive_pins_used.add(Conf.CS_PIN)
         # DRDY_PIN is the only GPIO input used by this ADC except from SPI pins
@@ -633,13 +631,12 @@ class ADS1256:
 
     def _configure_adc_registers(self) -> None:
         # Configure ADC registers:
-        # Status register not yet set, only variable written to avoid multiple
-        # triggering of the AUTOCAL procedure by changing other register flags
-        self._write_reg_bytes(Registers.ADCON, Conf.a)
-        # FIXME: set PGA gain
-        self.set_pga_gain(Conf.pga_gain)
-        self.drate = Conf.drate
-        self.status = Conf.status
+        self._write_reg_uint8(Registers.MUX, Conf.mux)
+        adcon_flags: int = Conf.clock_output | Conf.sensor_detect | Conf.pga_gain
+        self._write_reg_uint8(Registers.ADCON, adcon_flags)
+        self._write_reg_uint8(Registers.DRATE, Conf.drate)
+        # Status register written last as this can re-trigger ADC conversion
+        self._write_reg_uint8(Registers.STATUS, Conf.status)
 
     def _send_cmd(self, cmd: int) -> None:
         self._chip_select()
