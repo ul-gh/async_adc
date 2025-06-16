@@ -1,7 +1,7 @@
 [project]
 name = "async_adc"
 dynamic = ["version"]
-dependencies = ["pigpio"]
+dependencies = ["pigpio>=1.78", "pydantic-settings>=2.9.1", "toml>=0.10.2"]
 
 [build-system]
 requires = ["setuptools", "setuptools-scm"]
@@ -13,8 +13,11 @@ bms_gateway = ["*.toml"]
 [tool.setuptools_scm]
 # No config needed but section must be present
 
+[tool.pyright]
+reportUnknownMemberType = "hint"
+
 [tool.ruff.lint]
 select = ["ALL"]
 
 [tool.ruff]
-line-length = 120
+line-length = 100

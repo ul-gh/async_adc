@@ -1,10 +1,11 @@
 """CONSTANT DEFINITIONS for ADS1256."""  # noqa: N999
 
-from dataclasses import dataclass
+import enum
+
+from pydantic import BaseModel
 
 
-@dataclass
-class Registers:
+class Registers(enum.IntEnum):
     """Register addresses for ADS1256."""
 
     STATUS = 0x00
@@ -20,8 +21,7 @@ class Registers:
     FSC2 = 0x0A
 
 
-@dataclass
-class Commands:
+class Commands(enum.IntEnum):
     """Chip-level-command Definitions."""
 
     WAKEUP = 0x00  # Completes SYNC and exits standby mode
@@ -40,8 +40,7 @@ class Commands:
     RESET = 0xFE  # Reset to power-on values
 
 
-@dataclass
-class MuxFlags:
+class MuxRegPos(enum.IntEnum):
     """Input pin definitions for setting REG_MUX.
 
     High nibble selects positive input, low nibble negative input.
@@ -59,6 +58,11 @@ class MuxFlags:
     POS_AIN6 = 0x60
     POS_AIN7 = 0x70
     POS_AINCOM = 0x80
+
+
+class MuxRegNeg(enum.IntEnum):
+    """Negative Nibble input for Mux Register."""
+
     # Pin selection codes for the negative input:
     NEG_AIN0 = 0x00
     NEG_AIN1 = 0x01
@@ -71,8 +75,18 @@ class MuxFlags:
     NEG_AINCOM = 0x08
 
 
-@dataclass
-class StatusFlags:
+class MuxReg(BaseModel):
+    """Represent MuxRegister with config bits for positive and negative input."""
+
+    pos: MuxRegPos
+    neg: MuxRegNeg
+
+    def get_value(self) -> int:
+        """Mux Register Value."""
+        return self.pos | self.neg
+
+
+class StatusFlags(enum.IntEnum):
     """REG_STATUS Flags."""
 
     BUFFER_ENABLE = 0x02
@@ -80,13 +94,13 @@ class StatusFlags:
     ORDER_LSB = 0x08
 
 
-@dataclass
-class AdconFlags:
-    """REG_ADCON Flags."""
+class AdconGain(enum.IntEnum):
+    """REG_ADCON: Gain levels.
 
-    # REG_ADCON: Gain levels
-    # Note: You can set the numeric values 1, 2, 4, 8, 16, 32 and 64 directly
-    # via class/instance property ADS1256.pga_gain.
+    Note: You can set the numeric values 1, 2, 4, 8, 16, 32 and 64 directly
+    via class/instance property ADS1256.pga_gain.
+    """
+
     GAIN_1 = 0x00
     GAIN_2 = 0x01
     GAIN_4 = 0x02
@@ -95,21 +109,26 @@ class AdconFlags:
     GAIN_32 = 0x05
     GAIN_64 = 0x06
 
-    # REG_ADCON: Sensor Detect Current Sources
+
+class AdconSensorDetect(enum.IntEnum):
+    """REG_ADCON: Sensor Detect Current Sources."""
+
     SDCS_OFF = 0x00
     SDCS_500pA = 0x08
     SDCS_2uA = 0x10
     SDCS_10uA = 0x18
 
-    # REG_ADCON: Clock output pin settings
+
+class AdconClock(enum.IntEnum):
+    """REG_ADCON: Clock output pin settings."""
+
     CLKOUT_OFF = 0x00
     CLKOUT_EQUAL = 0x20
     CLKOUT_HALF = 0x40
     CLKOUT_FOURTH = 0x60
 
 
-@dataclass
-class DrateFlags:
+class DrateFlags(enum.IntEnum):
     """REG_DRATE Flags."""
 
     # REG_DRATE: Sample rate definitions:
