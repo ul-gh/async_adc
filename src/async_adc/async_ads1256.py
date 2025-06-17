@@ -2,7 +2,7 @@
 
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import MutableSequence, Sequence
 from typing import ClassVar, Literal, Self
 
 import pigpio  # pyright:ignore[reportMissingTypeStubs]
@@ -504,7 +504,7 @@ class ADS1256:
         """
         self.set_mux(ch_sequence[0])
 
-    def read_cycle(self, ch_sequence: Sequence[int], ch_buffer: list[int]) -> None:
+    def read_cycle(self, ch_sequence: Sequence[int], ch_buffer: MutableSequence[int]) -> None:
         """Continues reading a cyclic sequence of ADC input channel pin pairs.
 
         The cycle must be first set up using the init_cycle() method.
@@ -521,6 +521,8 @@ class ADS1256:
         datasheet (Sept.2013) on page 21, figure 19: "Cycling the
         ADS1256 Input Multiplexer" for cyclic data acquisition.
         """
+        # Assuming we do not want a run-time check for performance reason..
+        assert len(ch_buffer) >= len(ch_sequence)  # noqa: S101
         buf_len = len(ch_sequence)
         for i in range(buf_len):
             ch_buffer[i] = self.read_result_set_next_inputs(ch_sequence[(i + 1) % buf_len])
