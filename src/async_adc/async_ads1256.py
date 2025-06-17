@@ -224,7 +224,7 @@ class ADS1256:
 
     def get_ofc(self) -> int:
         """Get the offset compensation registers value, reading OFC0..2."""
-        # The result is 24 bits little endian two's complement value by default
+        # Result is 24 bits int, transmitted with big endian bit and byte order
         return self._read_reg_int24(Registers.OFC0)
 
     def set_ofc(self, value: int) -> None:
@@ -400,8 +400,8 @@ class ADS1256:
         if n_inbytes < INT24_BYTES or not isinstance(inbytes, bytearray):
             msg = "Read invalid data via SPI."
             raise OSError(msg)
-        # The result is 24 bits little endian two's complement
-        return int.from_bytes(inbytes, "little", signed=True)
+        # Result is 24 bits int, transmitted with big endian bit and byte order
+        return int.from_bytes(inbytes, byteorder="big", signed=True)
 
     def read_result(self) -> int | None:
         """Read previously started ADC conversion result.
@@ -438,8 +438,8 @@ class ADS1256:
         if n_inbytes < INT24_BYTES or not isinstance(inbytes, bytearray):
             msg = "Read invalid data via SPI."
             raise OSError(msg)
-        # The result is 24 bits little endian two's complement
-        return int.from_bytes(inbytes, "little", signed=True)
+        # Result is 24 bits int, transmitted with big endian bit and byte order
+        return int.from_bytes(inbytes, byteorder="big", signed=True)
 
     def read_result_set_next_inputs(self, diff_channel: int) -> int:
         """Read previously started ADC conversion result and set next pair of input channels.
@@ -486,8 +486,8 @@ class ADS1256:
         if n_inbytes < INT24_BYTES or not isinstance(inbytes, bytearray):
             msg = "Read invalid data via SPI."
             raise OSError(msg)
-        # The result is 24 bits little endian two's complement
-        return int.from_bytes(bytes=inbytes, byteorder="little", signed=True)
+        # Result is 24 bits int, transmitted with big endian bit and byte order
+        return int.from_bytes(bytes=inbytes, byteorder="big", signed=True)
 
     def init_cycle(self, ch_sequence: Sequence[int]) -> None:
         """Set up a sequence of ADC input channel pin pairs and trigger conversion.
@@ -691,9 +691,11 @@ class ADS1256:
     def _read_reg_int24(self, register_start: int) -> int:
         """Read a signed 24-bit integer beginning at register_start."""
         inbytes = self._read_reg_bytes(register_start, INT24_BYTES)
-        return int.from_bytes(inbytes, "little", signed=True)
+        # Result is 24 bits int, transmitted with big endian bit and byte order
+        return int.from_bytes(inbytes, byteorder="big", signed=True)
 
     def _write_reg_int24(self, register_start: int, value: int) -> None:
         """Write a signed 24-bit integer beginning at register_start."""
-        data = int.to_bytes(value, INT24_BYTES, "little", signed=True)
+        # Input is 24 bits int, transmitted with big endian bit and byte order
+        data = int.to_bytes(value, INT24_BYTES, byteorder="big", signed=True)
         self._write_reg_bytes(register_start, data)
