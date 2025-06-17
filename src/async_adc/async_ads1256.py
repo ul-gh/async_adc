@@ -8,7 +8,7 @@ from typing import ClassVar, Literal, Self
 import pigpio  # pyright:ignore[reportMissingTypeStubs]
 
 # This module only implements ADS1256 so this is imported as module-wide setting
-from async_adc.ads1256_config import ADS1256Config as Conf
+from async_adc.ads1256_config import ADS1256Config, init_or_read_from_config_file
 from async_adc.ads1256_definitions import Commands, Registers, StatusFlags
 
 logger = logging.getLogger(__name__)
@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 INT24_MIN = -0x800000
 INT24_MAX = 0x7FFFFF
 INT24_BYTES = 3
+
+conf: ADS1256Config = init_or_read_from_config_file()
 
 
 class ADS1256:
@@ -71,7 +73,7 @@ class ADS1256:
         self._configure_gpios()
         self._configure_spi()
         # Device reset for defined initial state
-        if Conf.CHIP_HARD_RESET_ON_START:
+        if conf.CHIP_HARD_RESET_ON_START:
             self.hard_reset()
         else:
             self.reset()
@@ -96,7 +98,7 @@ class ADS1256:
         """
         chip_id = self.get_chip_id()
         logger.debug("Chip ID: %s", chip_id)
-        if chip_id != Conf.CHIP_ID:
+        if chip_id != conf.CHIP_ID:
             self.stop_close_all()
             msg = "Received wrong chip ID value for ADS1256. Hardware connected?"
             raise RuntimeError(msg)
@@ -106,7 +108,7 @@ class ADS1256:
         logger.debug("Closing SPI handle: %s", self.spi_handle)
         self.pi.spi_close(self.spi_handle)
         self.open_spi_handles.remove(self.spi_handle)
-        exclusive_pins = (Conf.CS_PIN, Conf.DRDY_PIN)
+        exclusive_pins = (conf.CS_PIN, conf.DRDY_PIN)
         for pin in exclusive_pins:
             if pin is not None:
                 self.exclusive_pins_used.remove(pin)
@@ -161,7 +163,7 @@ class ADS1256:
         Readonly: This is a convenience value calculated from
         gain and v_ref setting.
         """
-        return Conf.v_ref * 2.0 / (self.get_pga_gain() * (2**23 - 1))
+        return conf.v_ref * 2.0 / (self.get_pga_gain() * (2**23 - 1))
 
     def get_mux(self) -> int:
         """Get value of ADC analog input multiplexer register."""
@@ -321,14 +323,14 @@ class ADS1256:
 
     def hard_reset(self) -> None:
         """Reset by toggling the hardware pin as configured as "RESET_PIN"."""
-        if Conf.RESET_PIN is None:
+        if conf.RESET_PIN is None:
             self.stop_close_all()
             msg = "Reset pin is not configured!"
             raise RuntimeError(msg)
         logger.debug("Performing hard RESET...")
-        self.pi.write(Conf.RESET_PIN, pigpio.LOW)
+        self.pi.write(conf.RESET_PIN, pigpio.LOW)
         time.sleep(100e-6)
-        self.pi.write(Conf.RESET_PIN, pigpio.HIGH)
+        self.pi.write(conf.RESET_PIN, pigpio.HIGH)
         # At hardware initialisation, a settling time for the oscillator
         # is necessary before doing any register access.
         # This is approx. 30ms, according to the datasheet.
@@ -347,7 +349,7 @@ class ADS1256:
         """
         self._chip_select()
         self.pi.spi_write(self.spi_handle, Commands.SYNC.to_bytes())
-        time.sleep(Conf.SYNC_TIMEOUT)
+        time.sleep(conf.SYNC_TIMEOUT)
         self.pi.spi_write(self.spi_handle, Commands.WAKEUP.to_bytes())
         # Release chip select and implement t_11 timeout
         self._chip_release()
@@ -384,13 +386,13 @@ class ADS1256:
             self.spi_handle,
             (Commands.WREG | Registers.MUX, 0x00, diff_channel, Commands.SYNC),
         )
-        time.sleep(Conf.SYNC_TIMEOUT)
+        time.sleep(conf.SYNC_TIMEOUT)
         self.pi.spi_write(self.spi_handle, (Commands.WAKEUP,))
         self._wait_drdy()
         # Read data from ADC, which still returns the /previous/ conversion
         # result from before changing inputs
         self.pi.spi_write(self.spi_handle, (Commands.RDATA,))
-        time.sleep(Conf.DATA_TIMEOUT)
+        time.sleep(conf.DATA_TIMEOUT)
         n_inbytes: int
         # pigpio library has wrong return type (str instead of bytearray) in case no bytes are read
         inbytes: bytearray | Literal[""]
@@ -427,7 +429,7 @@ class ADS1256:
         self._wait_drdy()
         # Send the read command
         self.pi.spi_write(self.spi_handle, (Commands.RDATA,))
-        time.sleep(Conf.DATA_TIMEOUT)
+        time.sleep(conf.DATA_TIMEOUT)
         n_inbytes: int
         # pigpio library has wrong return type (str instead of bytearray) in case no bytes are read
         inbytes: bytearray | Literal[""]
@@ -467,15 +469,15 @@ class ADS1256:
             handle=self.spi_handle,
             data=(Commands.WREG | Registers.MUX, 0x00, diff_channel, Commands.SYNC),
         )
-        time.sleep(Conf.SYNC_TIMEOUT)
+        time.sleep(conf.SYNC_TIMEOUT)
         self.pi.spi_write(handle=self.spi_handle, data=(Commands.WAKEUP,))
         # The datasheet is a bit unclear if a t_11 timeout is needed here.
         # Assuming the extra timeout is the safe choice:
-        time.sleep(Conf.T_11_TIMEOUT)
+        time.sleep(conf.T_11_TIMEOUT)
         # Read data from ADC, which still returns the /previous/ conversion
         # result from before changing inputs
         self.pi.spi_write(handle=self.spi_handle, data=(Commands.RDATA,))
-        time.sleep(Conf.DATA_TIMEOUT)
+        time.sleep(conf.DATA_TIMEOUT)
         n_inbytes: int
         # pigpio library has wrong return type (str instead of bytearray) in case no bytes are read
         inbytes: bytearray | Literal[""]
@@ -537,31 +539,31 @@ class ADS1256:
         start = time.time()
         elapsed = time.time() - start
         # Waits for DRDY pin to go to active low or _DRDY_TIMEOUT seconds to pass
-        if Conf.DRDY_PIN is not None:
-            drdy_level = self.pi.read(Conf.DRDY_PIN)
-            while (drdy_level == pigpio.HIGH) and (elapsed < Conf.DRDY_TIMEOUT):
+        if conf.DRDY_PIN is not None:
+            drdy_level = self.pi.read(conf.DRDY_PIN)
+            while (drdy_level == pigpio.HIGH) and (elapsed < conf.DRDY_TIMEOUT):
                 elapsed = time.time() - start
-                drdy_level = self.pi.read(Conf.DRDY_PIN)
+                drdy_level = self.pi.read(conf.DRDY_PIN)
                 # Sleep in order to avoid busy wait and reduce CPU load.
-                time.sleep(Conf.DRDY_DELAY)
-            if elapsed >= Conf.DRDY_TIMEOUT:
+                time.sleep(conf.DRDY_DELAY)
+            if elapsed >= conf.DRDY_TIMEOUT:
                 logger.warning("Timeout while polling configured DRDY pin!")
         else:
-            time.sleep(Conf.DRDY_TIMEOUT)
+            time.sleep(conf.DRDY_TIMEOUT)
 
     def _chip_select(self) -> None:
         # If chip select pin is hardwired to GND, do nothing.
-        if Conf.CS_PIN is not None:
-            self.pi.write(Conf.CS_PIN, pigpio.LOW)
+        if conf.CS_PIN is not None:
+            self.pi.write(conf.CS_PIN, pigpio.LOW)
 
     # Release chip select and implement t_11 timeout
     def _chip_release(self) -> None:
-        if Conf.CS_PIN is not None:
-            time.sleep(Conf.CS_TIMEOUT)
-            self.pi.write(Conf.CS_PIN, pigpio.HIGH)
+        if conf.CS_PIN is not None:
+            time.sleep(conf.CS_TIMEOUT)
+            self.pi.write(conf.CS_PIN, pigpio.HIGH)
         else:
             # The minimum t_11 timeout between commands, see datasheet Figure 1.
-            time.sleep(Conf.T_11_TIMEOUT)
+            time.sleep(conf.T_11_TIMEOUT)
 
     def _init_output(self, pin: int, init_state: int, name: str = "output") -> None:
         if pin is not None and pin not in self.pins_initialized:
@@ -581,16 +583,16 @@ class ADS1256:
 
     def _configure_spi(self) -> None:
         # Configure SPI registers
-        logger.debug("Activating SPI, SW chip select on GPIO: %s", Conf.CS_PIN)
+        logger.debug("Activating SPI, SW chip select on GPIO: %s", conf.CS_PIN)
         # The ADS1256 uses SPI MODE=1 <=> CPOL=0, CPHA=1.
         #             bbbbbbRTnnnnWAuuupppmm
         spi_flags = 0b0000000000000011100001
-        if Conf.SPI_BUS == 1:
+        if conf.SPI_BUS == 1:
             #              bbbbbbRTnnnnWAuuupppmm
             spi_flags |= 0b0000000000000100000000
         # PIGPIO library returns a numeric handle for each chip on this bus.
         try:
-            self.spi_handle = self.pi.spi_open(Conf.SPI_CHANNEL, Conf.SPI_FREQUENCY, spi_flags)
+            self.spi_handle = self.pi.spi_open(conf.SPI_CHANNEL, conf.SPI_FREQUENCY, spi_flags)
             self.check_chip_id()
         except Exception as e:
             logger.exception("SPI open error or wrong hardware setup. Abort.")
@@ -608,43 +610,43 @@ class ADS1256:
         # all slave devices on the bus must be initialized and set to inactive
         # level from the beginning. CS for all chips are given in config:
         # Initializing all other chip select lines as input every time.
-        for pin in Conf.CHIP_SELECT_GPIOS_INITIALIZE:
+        for pin in conf.CHIP_SELECT_GPIOS_INITIALIZE:
             self._init_input(pin, pigpio.PUD_UP, "chip select")
         # In addition to the CS pins of other devices of the bus, init CS for this chip
-        if Conf.CS_PIN is not None:
-            if Conf.CS_PIN in self.exclusive_pins_used:
+        if conf.CS_PIN is not None:
+            if conf.CS_PIN in self.exclusive_pins_used:
                 self.stop_close_all()
                 msg = "CS pin already used. Must be exclusive!"
                 raise ValueError(msg)
-            if Conf.CS_PIN not in Conf.CHIP_SELECT_GPIOS_INITIALIZE:
+            if conf.CS_PIN not in conf.CHIP_SELECT_GPIOS_INITIALIZE:
                 msg = (
                     "Chip select pins for all devices on the bus must be"
                     "listed in config: CHIP_SELECT_GPIOS_INITIALIZE"
                 )
                 raise ValueError(msg)
-            self.exclusive_pins_used.add(Conf.CS_PIN)
+            self.exclusive_pins_used.add(conf.CS_PIN)
         # DRDY_PIN is the only GPIO input used by this ADC except from SPI pins
-        if Conf.DRDY_PIN is not None:
-            if Conf.DRDY_PIN in self.exclusive_pins_used:
+        if conf.DRDY_PIN is not None:
+            if conf.DRDY_PIN in self.exclusive_pins_used:
                 self.stop_close_all()
                 msg = "Config error: DRDY pin already used. Must be exclusive!"
                 raise ValueError(msg)
-            self._init_input(Conf.DRDY_PIN, pigpio.PUD_DOWN, "data ready")
+            self._init_input(conf.DRDY_PIN, pigpio.PUD_DOWN, "data ready")
         # GPIO Outputs. If chip select pin is set to None, the
         # respective ADC input pin is assumed to be hardwired to GND.
-        if Conf.RESET_PIN is not None:
-            self._init_output(Conf.RESET_PIN, pigpio.HIGH, "reset")
-        if Conf.PDWN_PIN is not None:
-            self._init_output(Conf.PDWN_PIN, pigpio.HIGH, "power down")
+        if conf.RESET_PIN is not None:
+            self._init_output(conf.RESET_PIN, pigpio.HIGH, "reset")
+        if conf.PDWN_PIN is not None:
+            self._init_output(conf.PDWN_PIN, pigpio.HIGH, "power down")
 
     def _configure_adc_registers(self) -> None:
         # Configure ADC registers:
-        self._write_reg_uint8(Registers.MUX, Conf.mux)
-        adcon_flags: int = Conf.clock_output | Conf.sensor_detect | Conf.pga_gain
+        self._write_reg_uint8(Registers.MUX, conf.mux)
+        adcon_flags: int = conf.clock_output | conf.sensor_detect | conf.pga_gain
         self._write_reg_uint8(Registers.ADCON, adcon_flags)
-        self._write_reg_uint8(Registers.DRATE, Conf.drate)
+        self._write_reg_uint8(Registers.DRATE, conf.drate)
         # Status register written last as this can re-trigger ADC conversion
-        self._write_reg_uint8(Registers.STATUS, Conf.status)
+        self._write_reg_uint8(Registers.STATUS, conf.status)
 
     def _send_cmd(self, cmd: int) -> None:
         self._chip_select()
@@ -657,7 +659,7 @@ class ADS1256:
         """Return data bytes from the specified registers."""
         self._chip_select()
         self.pi.spi_write(handle=self.spi_handle, data=(Commands.RREG | register_start, count))
-        time.sleep(Conf.DATA_TIMEOUT)
+        time.sleep(conf.DATA_TIMEOUT)
         n_inbytes: int
         # pigpio library has wrong return type (str instead of bytearray) in case no bytes are read
         inbytes: bytearray | Literal[""]
