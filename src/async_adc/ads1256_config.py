@@ -8,7 +8,6 @@ To create multiple class instances for more than one AD converter, a unique
 configuration must be specified for each instance.
 """
 
-import json
 import logging
 import sys
 from pathlib import Path
@@ -24,7 +23,7 @@ from pydantic_settings import (
 
 from async_adc.ads1256_definitions import (
     AdconFlags,
-    DrateFlags,
+    DrateValues,
     MuxFlags,
     StatusFlags,
 )
@@ -134,7 +133,7 @@ class ADS1256Config(BaseSettings):
 
     # REG_DRATE:
     # 10 SPS places a filter zero at 50 Hz and 60 Hz for line noise rejection
-    drate: DrateFlags = DrateFlags.DRATE_10
+    drate: DrateValues = DrateValues.DRATE_10
 
     # REG_IO: No ADS1256 GPIOs needed
     gpio: int = 0x00

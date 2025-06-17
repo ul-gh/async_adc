@@ -38,6 +38,28 @@ class Commands(enum.IntEnum):
     RESET = 0xFE  # Reset to power-on values
 
 
+class DrateValues(enum.IntEnum):
+    """Data rate code values for REG_DRATE."""
+
+    # REG_DRATE: Sample rate definitions:
+    DRATE_30000 = 0b11110000  # 30,000SPS (default)
+    DRATE_15000 = 0b11100000  # 15,000SPS
+    DRATE_7500 = 0b11010000  # 7,500SPS
+    DRATE_3750 = 0b11000000  # 3,750SPS
+    DRATE_2000 = 0b10110000  # 2,000SPS
+    DRATE_1000 = 0b10100001  # 1,000SPS
+    DRATE_500 = 0b10010010  # 500SPS
+    DRATE_100 = 0b10000010  # 100SPS
+    DRATE_60 = 0b01110010  # 60SPS
+    DRATE_50 = 0b01100011  # 50SPS
+    DRATE_30 = 0b01010011  # 30SPS
+    DRATE_25 = 0b01000011  # 25SPS
+    DRATE_15 = 0b00110011  # 15SPS
+    DRATE_10 = 0b00100011  # 10SPS
+    DRATE_5 = 0b00010011  # 5SPS
+    DRATE_2_5 = 0b00000011  # 2.5SPS
+
+
 class MuxFlags(enum.IntFlag):
     """Input pin definitions for setting REG_MUX.
 
@@ -98,25 +120,3 @@ class AdconFlags(enum.IntFlag):
     CLKOUT_EQUAL = 0x20
     CLKOUT_HALF = 0x40
     CLKOUT_FOURTH = 0x60
-
-
-class DrateFlags(enum.IntFlag):
-    """REG_DRATE Flags."""
-
-    # REG_DRATE: Sample rate definitions:
-    DRATE_30000 = 0b11110000  # 30,000SPS (default)
-    DRATE_15000 = 0b11100000  # 15,000SPS
-    DRATE_7500 = 0b11010000  # 7,500SPS
-    DRATE_3750 = 0b11000000  # 3,750SPS
-    DRATE_2000 = 0b10110000  # 2,000SPS
-    DRATE_1000 = 0b10100001  # 1,000SPS
-    DRATE_500 = 0b10010010  # 500SPS
-    DRATE_100 = 0b10000010  # 100SPS
-    DRATE_60 = 0b01110010  # 60SPS
-    DRATE_50 = 0b01100011  # 50SPS
-    DRATE_30 = 0b01010011  # 30SPS
-    DRATE_25 = 0b01000011  # 25SPS
-    DRATE_15 = 0b00110011  # 15SPS
-    DRATE_10 = 0b00100011  # 10SPS
-    DRATE_5 = 0b00010011  # 5SPS
-    DRATE_2_5 = 0b00000011  # 2.5SPS
