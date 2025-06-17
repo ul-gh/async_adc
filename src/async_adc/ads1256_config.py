@@ -176,4 +176,4 @@ def init_or_read_from_config_file(*, init: bool = False) -> ADS1256Config:
 
 if __name__ == "__main__":
     # For testing purposes, init config file when this module is run as a script
-    init_or_read_from_config_file()
+    init_or_read_from_config_file(init=True)

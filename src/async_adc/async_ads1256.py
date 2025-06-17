@@ -1,5 +1,4 @@
 """Async implementation of ADS1256 and ADS1255 ADC driver for Raspberry Pi."""
-# ruff: noqa: S101
 
 import logging
 import time
@@ -9,8 +8,8 @@ from typing import ClassVar, Literal, Self
 import pigpio  # pyright:ignore[reportMissingTypeStubs]
 
 # This module only implements ADS1256 so this is imported as module-wide setting
-from .ads1256_config import ADS1256Config as Conf
-from .ads1256_definitions import Commands, Registers, StatusFlags
+from async_adc.ads1256_config import ADS1256Config as Conf
+from async_adc.ads1256_definitions import Commands, Registers, StatusFlags
 
 logger = logging.getLogger(__name__)
 
