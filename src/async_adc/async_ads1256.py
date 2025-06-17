@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 INT24_MIN = -0x800000
 INT24_MAX = 0x7FFFFF
+INT24_BYTES = 3
 
 
 class ADS1256:
@@ -391,13 +392,15 @@ class ADS1256:
         # result from before changing inputs
         self.pi.spi_write(self.spi_handle, (Commands.RDATA,))
         time.sleep(Conf.DATA_TIMEOUT)
-        # The result is 24 bits little endian two's complement value by default
-        inbytes = self.pi.spi_read(self.spi_handle, 3)[1]
-        self._chip_release()
-        if isinstance(inbytes, bytes):
-            return int.from_bytes(inbytes, "little", signed=True)
-        msg = "spi_read did not return a valid value"
-        raise ValueError(msg, inbytes)
+        n_inbytes: int
+        # pigpio library has wrong return type (str instead of bytearray) in case no bytes are read
+        inbytes: bytearray | Literal[""]
+        n_inbytes, inbytes = self.pi.spi_read(self.spi_handle, INT24_BYTES)
+        if n_inbytes < INT24_BYTES or not isinstance(inbytes, bytearray):
+            msg = "Read invalid data via SPI."
+            raise OSError(msg)
+        # The result is 24 bits little endian two's complement
+        return int.from_bytes(inbytes, "little", signed=True)
 
     def read_result(self) -> int | None:
         """Read previously started ADC conversion result.
@@ -426,15 +429,15 @@ class ADS1256:
         # Send the read command
         self.pi.spi_write(self.spi_handle, (Commands.RDATA,))
         time.sleep(Conf.DATA_TIMEOUT)
-        # The result is 24 bits little endian two's complement value by default
-        n_bytes = 3
-        count: int
+        n_inbytes: int
+        # pigpio library has wrong return type (str instead of bytearray) in case no bytes are read
         inbytes: bytearray | Literal[""]
-        count, inbytes = self.pi.spi_read(self.spi_handle, n_bytes)
+        n_inbytes, inbytes = self.pi.spi_read(self.spi_handle, INT24_BYTES)
         self._chip_release()
-        if count != n_bytes:
-            logger.warning("Read invalid data via SPI.")
-            return None
+        if n_inbytes < INT24_BYTES or not isinstance(inbytes, bytearray):
+            msg = "Read invalid data via SPI."
+            raise OSError(msg)
+        # The result is 24 bits little endian two's complement
         return int.from_bytes(inbytes, "little", signed=True)
 
     def read_result_set_next_inputs(self, diff_channel: int) -> int:
@@ -474,9 +477,15 @@ class ADS1256:
         # result from before changing inputs
         self.pi.spi_write(handle=self.spi_handle, data=(Commands.RDATA,))
         time.sleep(Conf.DATA_TIMEOUT)
-        # The result is 24 bits little endian two's complement value by default
-        inbytes = self.pi.spi_read(self.spi_handle, 3)[1]
+        n_inbytes: int
+        # pigpio library has wrong return type (str instead of bytearray) in case no bytes are read
+        inbytes: bytearray | Literal[""]
+        n_inbytes, inbytes = self.pi.spi_read(self.spi_handle, INT24_BYTES)
         self._chip_release()
+        if n_inbytes < INT24_BYTES or not isinstance(inbytes, bytearray):
+            msg = "Read invalid data via SPI."
+            raise OSError(msg)
+        # The result is 24 bits little endian two's complement
         return int.from_bytes(bytes=inbytes, byteorder="little", signed=True)
 
     def init_cycle(self, ch_sequence: Sequence[int]) -> None:
@@ -678,12 +687,12 @@ class ADS1256:
         """Write an unsigned 8-bit integer to register."""
         self._write_reg_bytes(register, value.to_bytes())
 
-    def _read_reg_int24(self, register_start: int) -> int | None:
+    def _read_reg_int24(self, register_start: int) -> int:
         """Read a signed 24-bit integer beginning at register_start."""
-        inbytes = self._read_reg_bytes(register_start)
+        inbytes = self._read_reg_bytes(register_start, INT24_BYTES)
         return int.from_bytes(inbytes, "little", signed=True)
 
     def _write_reg_int24(self, register_start: int, value: int) -> None:
         """Write a signed 24-bit integer beginning at register_start."""
-        data = int.to_bytes(value, 3, "little", signed=True)
+        data = int.to_bytes(value, INT24_BYTES, "little", signed=True)
         self._write_reg_bytes(register_start, data)
