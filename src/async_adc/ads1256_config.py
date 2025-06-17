@@ -8,13 +8,19 @@ To create multiple class instances for more than one AD converter, a unique
 configuration must be specified for each instance.
 """
 
+import json
 import logging
 import sys
 from pathlib import Path
 from typing import Literal
 import toml
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+    TomlConfigSettingsSource,
+)
 
 from async_adc.ads1256_definitions import (
     AdconFlags,
@@ -35,7 +41,18 @@ CONFIG_FILE_PATH = (
 class ADS1256Config(BaseSettings):
     """ADS1256 configuration settings."""
 
-    model_config = SettingsConfigDict(toml_file=CONFIG_FILE_PATH)
+    model_config = SettingsConfigDict(toml_file=CONFIG_FILE_PATH, use_enum_values=True)
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return (TomlConfigSettingsSource(settings_cls),)
 
     # 0 for main SPI bus, 1 for auxiliary SPI bus.
     SPI_BUS: Literal[0, 1] = 0
@@ -164,13 +181,16 @@ class ADS1256Config(BaseSettings):
 def init_or_read_from_config_file(*, init: bool = False) -> ADS1256Config:
     """Read or initialize configuration file and return config data object."""
     conf = ADS1256Config()
-    if init or not CONFIG_FILE_PATH.is_file() or True:
+    if init or not CONFIG_FILE_PATH.is_file():
         CONFIG_FILE_PATH.parent.mkdir(exist_ok=True)
-        # shutil.copy(default_conf_file, conf_file)
+        # Workaround flattening enums to support TOML output.
+        # model_plain_dict = json.loads(conf.model_dump_json())
+        # toml.dump(model_plain_dict, CONFIG_FILE_PATH.open("w"))
         toml.dump(conf.model_dump(), CONFIG_FILE_PATH.open("w"))
         msg = "Configuration initialized using file: %s\n==> Please check or edit this file NOW!"
         logger.log(logging.INFO if init else logging.ERROR, msg, CONFIG_FILE_PATH)
         sys.exit(0 if init else 1)
+
     return conf
 
 
