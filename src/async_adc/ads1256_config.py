@@ -8,25 +8,21 @@ To create multiple class instances for more than one AD converter, a unique
 configuration must be specified for each instance.
 """
 
-import json
 import logging
 import sys
 from pathlib import Path
-from typing import Literal
-import toml
+from typing import ClassVar, Literal
 
-from pydantic_settings import (
-    BaseSettings,
-    PydanticBaseSettingsSource,
-    SettingsConfigDict,
-    TomlConfigSettingsSource,
-)
+import toml
+import tomllib
+from pydantic import BaseModel, ConfigDict
 
 from async_adc.ads1256_definitions import (
-    AdconFlags,
-    DrateFlags,
-    MuxFlags,
-    StatusFlags,
+    ClockOutRateSetting,
+    DataRateSetting,
+    InputChannelSelect,
+    ProgrammableGainAmplifierSetting,
+    SensorDetectCurrentSources,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,26 +34,16 @@ CONFIG_FILE_PATH = (
 )
 
 
-class ADS1256Config(BaseSettings):
+class ADS1256Config(BaseModel):
     """ADS1256 configuration settings."""
 
-    model_config = SettingsConfigDict(toml_file=CONFIG_FILE_PATH, use_enum_values=True)
-
-    @classmethod
-    def settings_customise_sources(
-        cls,
-        settings_cls: type[BaseSettings],
-        init_settings: PydanticBaseSettingsSource,
-        env_settings: PydanticBaseSettingsSource,
-        dotenv_settings: PydanticBaseSettingsSource,
-        file_secret_settings: PydanticBaseSettingsSource,
-    ) -> tuple[PydanticBaseSettingsSource, ...]:
-        return (TomlConfigSettingsSource(settings_cls),)
+    model_config: ClassVar[ConfigDict] = ConfigDict(use_enum_values=True)
 
     # 0 for main SPI bus, 1 for auxiliary SPI bus.
     SPI_BUS: Literal[0, 1] = 0
 
-    # Only releveant when using hardware chip select. (FIXME: Not implemented)
+    # Only releveant when using hardware chip select.
+    # TODO(Uli): Not implemented
     # This determines which chip select pin is activated for this chip.
     # Main SPI has CS 0 and 1. Aux SPI has 0, 1, 2
     SPI_CHANNEL: Literal[0, 1, 2] = 0
@@ -115,26 +101,29 @@ class ADS1256Config(BaseSettings):
     # THIS REQUIRES an additional timeout via WaitDRDY() after each such operation.
     # Note: BUFFER_ENABLE means the ADC input voltage range is limited
     # to (AVDD-2V),see datasheet
-    status: StatusFlags = StatusFlags.BUFFER_ENABLE
+    buffer_enable: bool = True
+
+    # TODO(Alex): Autocalibration gets set no where, does this need to be enabled?
 
     # REG_MUX:
     # Default: positive input = AIN0, negative input = AINCOM
-    mux: MuxFlags = MuxFlags.POS_AIN0 | MuxFlags.NEG_AINCOM
+    positve_input_channel: InputChannelSelect = InputChannelSelect.AIN0
+    negative_input_channel: InputChannelSelect = InputChannelSelect.AINCOM
 
     # REG_ADCON:
     # Gain seting of the integrated programmable amplifier. This value must be
     # one of 1, 2, 4, 8, 16, 32, 64.
     # Gain = 1, V_ref = 2.5V ==> full-scale input voltage = 5.00V, corresponding
     # to a 24-bit two's complement output value of 2**23 - 1 = 8388607
-    pga_gain: AdconFlags = AdconFlags.GAIN_1
+    pga_gain: ProgrammableGainAmplifierSetting = ProgrammableGainAmplifierSetting.GAIN_1
     # Disable sensor detect current sources
-    sensor_detect: AdconFlags = AdconFlags.SDCS_OFF
+    sensor_detect: SensorDetectCurrentSources = SensorDetectCurrentSources.SDCS_OFF
     # Disable clk out signal (if not needed, source of disturbance)
-    clock_output: AdconFlags = AdconFlags.CLKOUT_OFF
+    clock_output: ClockOutRateSetting = ClockOutRateSetting.CLKOUT_OFF
 
     # REG_DRATE:
     # 10 SPS places a filter zero at 50 Hz and 60 Hz for line noise rejection
-    drate: DrateFlags = DrateFlags.DRATE_10
+    drate: DataRateSetting = DataRateSetting.DRATE_10
 
     # REG_IO: No ADS1256 GPIOs needed
     gpio: int = 0x00
@@ -180,13 +169,11 @@ class ADS1256Config(BaseSettings):
 
 def init_or_read_from_config_file(*, init: bool = False) -> ADS1256Config:
     """Read or initialize configuration file and return config data object."""
-    conf = ADS1256Config()
+    conf = ADS1256Config.model_validate(tomllib.loads(CONFIG_FILE_PATH.open("r").read()))
     if init or not CONFIG_FILE_PATH.is_file():
         CONFIG_FILE_PATH.parent.mkdir(exist_ok=True)
         # Workaround flattening enums to support TOML output.
-        # model_plain_dict = json.loads(conf.model_dump_json())
-        # toml.dump(model_plain_dict, CONFIG_FILE_PATH.open("w"))
-        toml.dump(conf.model_dump(), CONFIG_FILE_PATH.open("w"))
+        _ = toml.dump(conf.model_dump(), CONFIG_FILE_PATH.open("w"))
         msg = "Configuration initialized using file: %s\n==> Please check or edit this file NOW!"
         logger.log(logging.INFO if init else logging.ERROR, msg, CONFIG_FILE_PATH)
         sys.exit(0 if init else 1)
@@ -196,4 +183,4 @@ def init_or_read_from_config_file(*, init: bool = False) -> ADS1256Config:
 
 if __name__ == "__main__":
     # For testing purposes, init config file when this module is run as a script
-    init_or_read_from_config_file(init=True)
+    _ = init_or_read_from_config_file(init=True)

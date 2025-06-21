@@ -1,12 +1,16 @@
 [project]
-name = "async_adc"
+dependencies = [
+    "pigpio>=1.78",
+    "pydantic>=2.11.7",
+    "toml>=0.10.2",
+]
 dynamic = ["version"]
-dependencies = ["pigpio>=1.78", "pydantic-settings>=2.9.1", "toml>=0.10.2"]
+name = "async_adc"
 requires-python = ">= 3.10"
 
 [build-system]
-requires = ["setuptools", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
+requires = ["setuptools", "setuptools-scm"]
 
 [tool.setuptools.package-data]
 bms_gateway = ["*.toml"]
@@ -16,8 +20,17 @@ bms_gateway = ["*.toml"]
 
 [tool.pyright]
 reportUnknownMemberType = "hint"
+reportUnusedImport = false       # Is also shown by ruff
+
+# reportAny = "hint"
 
 [tool.ruff.lint]
+ignore = [
+    "D107",
+    "FIX002", # DEBUG: ONLY TEMPORARY, SHOULD BE REMOVED LATER ON
+    "TD003",
+    "W293",   # Is automatically fixed by the formatter
+]
 select = ["ALL"]
 
 [tool.ruff]

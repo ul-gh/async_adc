@@ -1,107 +1,152 @@
-"""CONSTANT DEFINITIONS for ADS1256."""  # noqa: N999
+"""CONSTANT DEFINITIONS for ADS1256."""
+
+from __future__ import annotations
 
 import enum
-
-
-class Registers(enum.IntEnum):
-    """Register addresses for ADS1256."""
-
-    STATUS = 0x00
-    MUX = 0x01
-    ADCON = 0x02
-    DRATE = 0x03
-    IO = 0x04
-    OFC0 = 0x05
-    OFC1 = 0x06
-    OFC2 = 0x07
-    FSC0 = 0x08
-    FSC1 = 0x09
-    FSC2 = 0x0A
+from typing import Literal, Self, override
 
 
 class Commands(enum.IntEnum):
     """Chip-level-command Definitions."""
 
-    WAKEUP = 0x00  # Completes SYNC and exits standby mode
-    RDATA = 0x01  # Read data
-    RDATAC = 0x03  # Start read data continuously
-    SDATAC = 0x0F  # Stop read data continuously
-    RREG = 0x10  # Read from register
-    WREG = 0x50  # Write to register
-    SELFCAL = 0xF0  # Offset and gain self-calibration
-    SELFOCAL = 0xF1  # Offset self-calibration
-    SELFGCAL = 0xF2  # Gain self-calibration
-    SYSOCAL = 0xF3  # System offset calibration
-    SYSGCAL = 0xF4  # System gain calibration
-    SYNC = 0xFC  # Synchronize the A/D conversion
-    STANDBY = 0xFD  # Begin standby mode
-    RESET = 0xFE  # Reset to power-on values
+    WAKEUP = 0x00
+    """Completes SYNC and exits standby mode"""
 
-
-class MuxFlags(enum.IntFlag):
-    """Input pin definitions for setting REG_MUX.
-
-    High nibble selects positive input, low nibble negative input.
-    Pin selection codes: logic OR together to form the register value.
-    Example: ads1256.mux = POS_AIN0 | NEG_AINCOM
-    Pin selection codes for the positive input
+    RDATA = 0x01
+    """Read data
+    
+    Issue this command after DRDY goes low to read a single conversion result.
+    After all 24 bits have been shifted out on DOUT, DRDY goes high.
+    It is not necessary to read back all 24 bits, but DRDY will then not return high
+    until new data is being updated.
+    See the Timing Characteristics for the required delay between the end of the RDATA command and
+    the beginning of shifting data on DOUT: t6.
     """
 
-    # Pin selection codes for the non-inverting input:
-    POS_AIN0 = 0x00
-    POS_AIN1 = 0x10
-    POS_AIN2 = 0x20
-    POS_AIN3 = 0x30
-    POS_AIN4 = 0x40
-    POS_AIN5 = 0x50
-    POS_AIN6 = 0x60
-    POS_AIN7 = 0x70
-    POS_AINCOM = 0x80
-    # Pin selection codes for the inverting input:
-    NEG_AIN0 = 0x00
-    NEG_AIN1 = 0x01
-    NEG_AIN2 = 0x02
-    NEG_AIN3 = 0x03
-    NEG_AIN4 = 0x04
-    NEG_AIN5 = 0x05
-    NEG_AIN6 = 0x06
-    NEG_AIN7 = 0x07
-    NEG_AINCOM = 0x08
+    RDATAC = 0x03
+    """Start read data continuously"""
+
+    SDATAC = 0x0F
+    """Stop read data continuously"""
+
+    RREG = 0x10
+    """Read from register"""
+
+    WREG = 0x50
+    """Write to register"""
+
+    SELFCAL = 0xF0
+    """Offset and gain self-calibration"""
+
+    SELFOCAL = 0xF1
+    """Offset self-calibration"""
+
+    SELFGCAL = 0xF2
+    """Gain self-calibration"""
+
+    SYSOCAL = 0xF3
+    """System offset calibration"""
+
+    SYSGCAL = 0xF4
+    """System gain calibration"""
+
+    SYNC = 0xFC
+    """Synchronize the A/D conversion"""
+
+    STANDBY = 0xFD
+    """Begin standby mode"""
+
+    RESET = 0xFE
+    """Reset to power-on values"""
 
 
-class StatusFlags(enum.IntFlag):
-    """REG_STATUS Flags."""
+class InputChannelSelect(enum.IntEnum):
+    """Input Channel Select."""
 
-    BUFFER_ENABLE = 0x02
-    AUTOCAL_ENABLE = 0x04
-    ORDER_LSB = 0x08
+    AIN0 = 0x00
+    AIN1 = 0x01
+    AIN2 = 0x02
+    AIN3 = 0x03
+    AIN4 = 0x04
+    AIN5 = 0x05
+    AIN6 = 0x06
+    AIN7 = 0x07
+    AINCOM = 0x08
+
+    @classmethod
+    @override
+    def _missing_(cls, value: object) -> Self:
+        """Get an Input Channel Select from and Integer.
+
+        This is necessary, because as stated in the Datasheet, if the bit at position 0x08 is high,
+        The state of AINCOM is correct no matter the other bits.
+        """
+        if not isinstance(value, int):
+            msg = "IntEnum can only be initialized with an Int."
+            raise TypeError(msg)
+        if value & cls.AINCOM:
+            return cls(cls.AINCOM)
+        # mask of all higher bits and initialzie normally
+        return cls(value & 0x07)
 
 
-class AdconFlags(enum.IntFlag):
-    """REG_ADCON Flags."""
+class ClockOutRateSetting(enum.IntEnum):
+    """Clock Out Rate Setting."""
 
-    # Programmable Gain Amplifier settings
-    GAIN_1 = 0x00
-    GAIN_2 = 0x01
-    GAIN_4 = 0x02
-    GAIN_8 = 0x03
-    GAIN_16 = 0x04
-    GAIN_32 = 0x05
-    GAIN_64 = 0x06
-    # Sensor Detect Current Source settings
-    SDCS_OFF = 0x00
-    SDCS_500pA = 0x08
-    SDCS_2uA = 0x10
-    SDCS_10uA = 0x18
-    # Clock output pin settings
-    CLKOUT_OFF = 0x00
-    CLKOUT_EQUAL = 0x20
-    CLKOUT_HALF = 0x40
-    CLKOUT_FOURTH = 0x60
+    CLKOUT_OFF = 0b00
+    CLKOUT_EQUAL = 0b01
+    CLKOUT_HALF = 0b10
+    CLKOUT_FOURTH = 0b11
 
 
-class DrateFlags(enum.IntFlag):
-    """REG_DRATE Flags."""
+class SensorDetectCurrentSources(enum.IntEnum):
+    """Sensor Detect Current Source settings."""
+
+    SDCS_OFF = 0b00
+    SDCS_500pA = 0b01
+    SDCS_2uA = 0b10
+    SDCS_10uA = 0b11
+
+
+ProgrammableGainAmplifierValues = Literal[1, 2, 4, 8, 16, 32, 64]
+
+
+class ProgrammableGainAmplifierSetting(enum.IntEnum):
+    """Programmable Gain Amplifier settings."""
+
+    GAIN_1 = 0b000
+    GAIN_2 = 0b001
+    GAIN_4 = 0b010
+    GAIN_8 = 0b011
+    GAIN_16 = 0b100
+    GAIN_32 = 0b101
+    GAIN_64 = 0b110
+
+    @classmethod
+    @override
+    def _missing_(cls, value: object) -> Self:
+        alternative_gain_64 = 0b111
+        if value == alternative_gain_64:
+            return cls(cls.GAIN_64)
+        msg = "No valid value."
+        raise ValueError(msg)
+
+    def as_gain(self) -> ProgrammableGainAmplifierValues:
+        """Get the integer ."""
+        return 2**self.value
+
+    @classmethod
+    def from_gain(cls, data: ProgrammableGainAmplifierValues) -> Self:
+        """Get an Programmable Gain Amplifier Setting from an int value.
+
+        Necessary, becuase valid integer values are only the 2**x up until x=6.
+        """
+        log2val = int.bit_length(data) - 1
+        return cls(log2val)
+
+
+class DataRateSetting(enum.IntEnum):
+    """Available Data Rates."""
 
     # REG_DRATE: Sample rate definitions:
     DRATE_30000 = 0b11110000  # 30,000SPS (default)
