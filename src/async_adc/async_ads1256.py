@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from contextlib import contextmanager
@@ -30,7 +31,7 @@ from async_adc.registers import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,10 @@ class ADS1256:
     pi: pigpio.pi
 
     conf: ADS1256Config
+
+    data_ready: asyncio.Event
+
+    data_ready_callback: pigpio._callback  # pyright: ignore[reportPrivateUsage]
 
     ################### Initialize #############################################
 
@@ -142,6 +147,11 @@ class ADS1256:
                 msg = "Config error: DRDY pin already used. Must be exclusive!"
                 raise ValueError(msg)
             self._init_input(self.conf.DRDY_PIN, pigpio.PUD_DOWN, "data ready")
+            self.data_ready_callback = self.pi.callback(
+                self.conf.DRDY_PIN,
+                pigpio.FALLING_EDGE,
+                self._data_ready_pin_callback(),
+            )
 
         # GPIO Outputs. If chip select pin is set to None, the
         # respective ADC input pin is assumed to be hardwired to GND.
@@ -196,6 +206,9 @@ class ADS1256:
         if not self.pi.connected:
             msg = "Could not connect to hardware via pigpio library"
             raise OSError(msg)
+
+        self.data_ready = asyncio.Event()
+
         # Configure interfaces
         self._configure_gpios()
         self._configure_spi()
@@ -210,7 +223,13 @@ class ADS1256:
 
     ################### Internal Methods #######################################
 
-    def _wait_data_ready(self) -> None:
+    def _data_ready_pin_callback(self) -> Callable[[int, int, int], None]:
+        def callback(_gpio: int, _level: int, _tick: int) -> None:
+            self.data_ready.set()
+
+        return callback
+
+    async def _wait_data_ready(self) -> None:
         """Wait for Data Ready.
 
         Delays until the configured DRDY input pin is pulled to
@@ -228,17 +247,12 @@ class ADS1256:
         elapsed = time.time() - start
         # Waits for DRDY pin to go to active low or _DRDY_TIMEOUT seconds to pass
         if self.conf.DRDY_PIN is not None:
-            # TODO(Alex): A interrupt can be used here to make a callback.
-            drdy_level = self.pi.read(self.conf.DRDY_PIN)  # pyright: ignore[reportUnknownVariableType]
-            while (drdy_level == pigpio.HIGH) and (elapsed < self.conf.DRDY_TIMEOUT):
-                elapsed = time.time() - start
-                drdy_level = self.pi.read(self.conf.DRDY_PIN)  # pyright: ignore[reportUnknownVariableType]
-                # Sleep in order to avoid busy wait and reduce CPU load.
-                time.sleep(self.conf.DRDY_DELAY)
+            self.data_ready.clear()
+            _ = await self.data_ready.wait()
             if elapsed >= self.conf.DRDY_TIMEOUT:
                 logger.warning("Timeout while polling configured DRDY pin!")
         else:
-            time.sleep(self.conf.DRDY_TIMEOUT)
+            _ = await asyncio.sleep(self.conf.DRDY_TIMEOUT)
 
     def _chip_select(self) -> None:
         """Enable the chip with the chip select pin."""
@@ -278,6 +292,10 @@ class ADS1256:
 
     def _send_cmd(self, cmd: Commands) -> None:
         self._write_to_spi(cmd.to_bytes())
+
+    def _send_cmd_wait_data_ready(self, cmd: Commands) -> None:
+        self._send_cmd(cmd)
+        asyncio.run(self._wait_data_ready())
 
     def _read_from_spi(self, number_of_read_bytes: int) -> bytearray:
         self._chip_select()
@@ -362,7 +380,7 @@ class ADS1256:
         acquisition, it is faster that the read_oneshot() method.
         """
         # Wait for data to be ready
-        self._wait_data_ready()
+        asyncio.run(self._wait_data_ready())
         # Send the read command
         self._send_cmd(Commands.RDATA)
         time.sleep(self.conf.DATA_TIMEOUT)
@@ -390,7 +408,7 @@ class ADS1256:
         assert len(data) == register.number_of_bytes  # noqa: S101
         self._write_to_spi(bytes((Commands.WREG | register.address, len(data))) + data)
         if self.status_register.auto_calibration and register.wait_for_autocal:
-            self._wait_data_ready()
+            asyncio.run(self._wait_data_ready())
 
     def _read_register(self, register: Register) -> None:
         """Get data from remote register."""
@@ -407,16 +425,14 @@ class ADS1256:
 
         Sets the ADS1255/ADS1256 OFC and FSC registers.
         """
-        self._send_cmd(Commands.SELFCAL)
-        self._wait_data_ready()
+        self._send_cmd_wait_data_ready(Commands.SELFCAL)
 
     def self_offset_calibration(self) -> None:
         """Perform an input zero calibration using chip-internal reference switches.
 
         Sets the ADS1255/ADS1256 OFC register.
         """
-        self._send_cmd(Commands.SELFOCAL)
-        self._wait_data_ready()
+        self._send_cmd_wait_data_ready(Commands.SELFOCAL)
 
     def self_gain_calibration(self) -> None:
         """Perform an input full-scale calibration.
@@ -425,8 +441,7 @@ class ADS1256:
 
         Sets the ADS1255/ADS1256 FSC register.
         """
-        self._send_cmd(Commands.SELFGCAL)
-        self._wait_data_ready()
+        self._send_cmd_wait_data_ready(Commands.SELFGCAL)
 
     def system_offset_calibration(self) -> None:
         """Perform in-system offset calibration.
@@ -435,8 +450,7 @@ class ADS1256:
         current input voltage corresponds to a zero output value.
         The input multiplexer must be set to the appropriate pins first.
         """
-        self._send_cmd(Commands.SYSOCAL)
-        self._wait_data_ready()
+        self._send_cmd_wait_data_ready(Commands.SYSOCAL)
 
     def system_gain_calibration(self) -> None:
         """Perform in-system gain calibration.
@@ -445,8 +459,7 @@ class ADS1256:
         input voltage corresponds to a full-scale output value.
         The input multiplexer must be set to the appropriate pins first.
         """
-        self._send_cmd(Commands.SYSGCAL)
-        self._wait_data_ready()
+        self._send_cmd_wait_data_ready(Commands.SYSGCAL)
 
     def sync(self) -> None:
         """Restart the ADC conversion cycle with a SYNC + WAKEUP.
@@ -500,7 +513,7 @@ class ADS1256:
         # is necessary before doing any register access.
         # This is approx. 30ms, according to the datasheet.
         time.sleep(0.03)
-        self._wait_data_ready()
+        asyncio.run(self._wait_data_ready())
 
     def get_pga_gain(self) -> ProgrammableGainAmplifierValues:
         """Get ADC programmable gain amplifier setting."""
@@ -619,7 +632,6 @@ class ADS1256:
         Then one conversion is done, and afterwards the device goes back to standby.
         """
         self._send_cmd(Commands.WAKEUP)
-        self._wait_data_ready()
         value = self.read_data()
         self.standby()
         return value
