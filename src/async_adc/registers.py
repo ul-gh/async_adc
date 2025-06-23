@@ -21,7 +21,10 @@ class Register(ABC):
     address: ClassVar[int]
     number_of_bytes: ClassVar[int] = 1
 
-    value: int = 0
+    value: int
+
+    def __init__(self) -> None:
+        self.value = 0
 
     _wait_for_auto_calibration: bool = False
     """If this is set to true, there should be a wait done to wait for the auto calibration."""
@@ -30,7 +33,6 @@ class Register(ABC):
         """Update local properties to be in sync with remote register."""
         self.value = int.from_bytes(raw_data)
 
-    @property
     def wait_for_auto_calibration(self) -> bool:
         """Determine if wait for auto calibration is set and reset value."""
         value = self._wait_for_auto_calibration
