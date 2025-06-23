@@ -31,7 +31,7 @@ from async_adc.registers import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Generator, Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +84,8 @@ class ADS1256:
     data_ready_is_low: asyncio.Event
 
     lock: asyncio.Lock
+
+    chip_selected: bool
 
     data_ready_callback: pigpio._callback  # pyright: ignore[reportPrivateUsage]
 
@@ -211,6 +213,7 @@ class ADS1256:
 
         self.data_ready_is_low = asyncio.Event()
         self.lock = asyncio.Lock()
+        self.chip_selected = False
 
         # Configure interfaces
         self._configure_gpio_s()
@@ -266,20 +269,20 @@ class ADS1256:
         else:
             _ = await asyncio.sleep(self.conf.DRDY_TIMEOUT)
 
-    def _chip_select(self) -> None:
-        """Enable the chip with the chip select pin."""
-        # If chip select pin is hardwired to GND, do nothing.
+    @contextmanager
+    def _select_chip(self) -> Generator[None, None, None]:
+        # Enable Chip Select
+        self.chip_selected = True
+        # If no chip select pin is provided we can just continue
         if self.conf.CS_PIN is not None:
             self.pi.write(self.conf.CS_PIN, pigpio.LOW)
-
-    def _chip_release(self) -> None:
-        """Release the chip select pin."""
+        # Go to inner context
+        yield
+        # Release Chip Select
         if self.conf.CS_PIN is not None:
             time.sleep(self.conf.CS_TIMEOUT)
             self.pi.write(self.conf.CS_PIN, pigpio.HIGH)
-        else:
-            # The minimum t_11 timeout between commands, see datasheet Figure 1.
-            time.sleep(self.conf.T_11_TIMEOUT)
+        self.chip_selected = False
 
     def _init_output(self, pin: int, init_state: int, name: str = "output") -> None:
         if pin not in self.pins_initialized:
@@ -298,9 +301,12 @@ class ADS1256:
             self.pins_initialized.add(pin)
 
     def _write_to_spi(self, bytes_out: bytes) -> None:
-        self._chip_select()
-        self.pi.spi_write(handle=self.spi_handle, data=bytes_out)
-        self._chip_release()
+        # check if at least t11 is over before sending next write
+        if self.chip_selected:
+            self.pi.spi_write(handle=self.spi_handle, data=bytes_out)
+        else:
+            with self._select_chip():
+                self.pi.spi_write(handle=self.spi_handle, data=bytes_out)
 
     def _send_cmd(self, cmd: Commands) -> None:
         self._write_to_spi(cmd.to_bytes())
@@ -310,20 +316,31 @@ class ADS1256:
         await self._wait_data_ready()
 
     def _read_from_spi(self, number_of_read_bytes: int) -> bytearray:
-        self._chip_select()
         n_input_bytes: int
         # pigpio library has wrong return type (str instead of bytearray) in case no bytes are read
         input_bytes: bytearray | Literal[""]
-        n_input_bytes, input_bytes = self.pi.spi_read(  # pyright:ignore[reportAny]
-            handle=self.spi_handle,
-            count=number_of_read_bytes,
-        )
-        # Release chip select and implement t_11 timeout
-        self._chip_release()
+        if self.chip_selected:
+            n_input_bytes, input_bytes = self.pi.spi_read(  # pyright:ignore[reportAny]
+                handle=self.spi_handle,
+                count=number_of_read_bytes,
+            )
+        else:
+            with self._select_chip():
+                n_input_bytes, input_bytes = self.pi.spi_read(  # pyright:ignore[reportAny]
+                    handle=self.spi_handle,
+                    count=number_of_read_bytes,
+                )
         if n_input_bytes < number_of_read_bytes or not isinstance(input_bytes, bytearray):
             msg = "Read invalid data via SPI."
             raise OSError(msg)
         return input_bytes
+
+    async def _read_data(self) -> int:
+        # Send the read command
+        self._send_cmd(Commands.RDATA)
+        await asyncio.sleep(self.conf.DATA_TIMEOUT)
+        # The result is 24 bits little endian two's complement
+        return int.from_bytes(self._read_from_spi(INT24_BYTES), "little", signed=True)
 
     ################### Context Manager ########################################
 
@@ -373,7 +390,6 @@ class ADS1256:
     async def read_data(self) -> int:
         """Read previously started ADC conversion result.
 
-        Arguments:  None
         Returns:    Signed integer ADC conversion result
 
         Issue this command to read a single conversion result for a
@@ -394,11 +410,7 @@ class ADS1256:
         async with self.lock:
             # Wait for data to be ready
             await self._wait_data_ready()
-            # Send the read command
-            self._send_cmd(Commands.RDATA)
-            await asyncio.sleep(self.conf.DATA_TIMEOUT)
-            # The result is 24 bits little endian two's complement
-            return int.from_bytes(self._read_from_spi(INT24_BYTES), "little", signed=True)
+            return await self._read_data()
 
     @contextmanager
     def read_data_continuous(self) -> NoReturn:
@@ -420,6 +432,7 @@ class ADS1256:
         data = register.value.to_bytes()
         assert len(data) == register.number_of_bytes  # noqa: S101
         self._write_to_spi(bytes((Commands.WREG | register.address, len(data) - 1)) + data)
+        await asyncio.sleep(self.conf.T_11_TIMEOUT)
         if register.wait_for_auto_calibration() and self.status_register.auto_calibration:
             await self._wait_data_ready()
 
@@ -493,7 +506,6 @@ class ADS1256:
             self._send_cmd(Commands.SYNC)
             await asyncio.sleep(self.conf.SYNC_TIMEOUT)
             self._send_cmd(Commands.WAKEUP)
-            # Release chip select and implement t_11 timeout
 
     async def standby(self) -> None:
         """Put chip in low-power standby mode."""
