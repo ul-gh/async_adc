@@ -81,7 +81,7 @@ class ADS1256:
 
     conf: ADS1256Config
 
-    data_ready: asyncio.Event
+    data_ready_is_low: asyncio.Event
 
     data_ready_callback: pigpio._callback  # pyright: ignore[reportPrivateUsage]
 
@@ -149,7 +149,7 @@ class ADS1256:
             self._init_input(self.conf.DRDY_PIN, pigpio.PUD_DOWN, "data ready")
             self.data_ready_callback = self.pi.callback(
                 self.conf.DRDY_PIN,
-                pigpio.FALLING_EDGE,
+                pigpio.EITHER_EDGE,
                 self._data_ready_pin_callback(),
             )
 
@@ -207,7 +207,7 @@ class ADS1256:
             msg = "Could not connect to hardware via pigpio library"
             raise OSError(msg)
 
-        self.data_ready = asyncio.Event()
+        self.data_ready_is_low = asyncio.Event()
 
         # Configure interfaces
         self._configure_gpio_s()
@@ -225,7 +225,18 @@ class ADS1256:
 
     def _data_ready_pin_callback(self) -> Callable[[int, int, int], None]:
         def callback(_gpio: int, _level: int, _tick: int) -> None:
-            self.data_ready.set()
+            falling_edge_level = 0
+            rising_edge_level = 1
+            if _level == falling_edge_level:
+                self.data_ready_is_low.set()
+            elif _level == rising_edge_level:
+                self.data_ready_is_low.clear()
+            else:
+                msg = (
+                    "Callback was called with neither a rising nor a falling edge."
+                    " A watchdog timeout was triggered."
+                )
+                raise ValueError(msg)
 
         return callback
 
@@ -245,9 +256,8 @@ class ADS1256:
         """
         # Waits for DRDY pin to go to active low or _DRDY_TIMEOUT seconds to pass
         if self.conf.DRDY_PIN is not None:
-            self.data_ready.clear()
             try:
-                _ = await asyncio.wait_for(self.data_ready.wait(), self.conf.DRDY_TIMEOUT)
+                _ = await asyncio.wait_for(self.data_ready_is_low.wait(), self.conf.DRDY_TIMEOUT)
             except TimeoutError:
                 logger.exception("Timeout while waiting for DRDY pin to go low!")
         else:
