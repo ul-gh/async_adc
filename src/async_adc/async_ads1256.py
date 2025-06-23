@@ -83,6 +83,8 @@ class ADS1256:
 
     data_ready_is_low: asyncio.Event
 
+    lock: asyncio.Lock
+
     data_ready_callback: pigpio._callback  # pyright: ignore[reportPrivateUsage]
 
     ################### Initialize #############################################
@@ -177,19 +179,19 @@ class ADS1256:
         self.input_multiplexer_control_register.positive_input_channel = (
             self.conf.positive_input_channel
         )
-        self._write_register(self.input_multiplexer_control_register)
+        asyncio.run(self._write_register(self.input_multiplexer_control_register))
 
         self.ad_control_register.clock_out_rate = self.conf.clock_output
         self.ad_control_register.sensor_detect_current = self.conf.sensor_detect
         self.ad_control_register.programmable_gain_amplifier = self.conf.pga_gain
-        self._write_register(self.ad_control_register)
+        asyncio.run(self._write_register(self.ad_control_register))
 
         self.ad_data_rate_register.data_rate = self.conf.data_rate
-        self._write_register(self.ad_data_rate_register)
+        asyncio.run(self._write_register(self.ad_data_rate_register))
 
         # Status register written last as this can re-trigger ADC conversion
         self.status_register.analog_buffer = self.conf.buffer_enable
-        self._write_register(self.status_register)
+        asyncio.run(self._write_register(self.status_register))
 
     def __init__(self, pi: pigpio.pi, conf: ADS1256Config | None = None) -> None:
         """ADS1256 initialization.
@@ -208,15 +210,16 @@ class ADS1256:
             raise OSError(msg)
 
         self.data_ready_is_low = asyncio.Event()
+        self.lock = asyncio.Lock()
 
         # Configure interfaces
         self._configure_gpio_s()
         self._configure_spi()
         # Device reset for defined initial state
         if self.conf.CHIP_HARD_RESET_ON_START:
-            self.hard_reset()
+            asyncio.run(self.hard_reset())
         else:
-            self.reset()
+            asyncio.run(self.reset())
 
         # Configure ADC hardware registers
         self._configure_adc_registers()
@@ -302,9 +305,9 @@ class ADS1256:
     def _send_cmd(self, cmd: Commands) -> None:
         self._write_to_spi(cmd.to_bytes())
 
-    def _send_cmd_wait_data_ready(self, cmd: Commands) -> None:
+    async def _send_cmd_wait_data_ready(self, cmd: Commands) -> None:
         self._send_cmd(cmd)
-        asyncio.run(self._wait_data_ready())
+        await self._wait_data_ready()
 
     def _read_from_spi(self, number_of_read_bytes: int) -> bytearray:
         self._chip_select()
@@ -367,7 +370,7 @@ class ADS1256:
 
     ################### IMPLEMENTED COMMANDS ###################################
 
-    def read_data(self) -> int:
+    async def read_data(self) -> int:
         """Read previously started ADC conversion result.
 
         Arguments:  None
@@ -388,13 +391,14 @@ class ADS1256:
         Because this function does not implicitly restart a running
         acquisition, it is faster that the read_one_shot() method.
         """
-        # Wait for data to be ready
-        asyncio.run(self._wait_data_ready())
-        # Send the read command
-        self._send_cmd(Commands.RDATA)
-        time.sleep(self.conf.DATA_TIMEOUT)
-        # The result is 24 bits little endian two's complement
-        return int.from_bytes(self._read_from_spi(INT24_BYTES), "little", signed=True)
+        async with self.lock:
+            # Wait for data to be ready
+            await self._wait_data_ready()
+            # Send the read command
+            self._send_cmd(Commands.RDATA)
+            await asyncio.sleep(self.conf.DATA_TIMEOUT)
+            # The result is 24 bits little endian two's complement
+            return int.from_bytes(self._read_from_spi(INT24_BYTES), "little", signed=True)
 
     @contextmanager
     def read_data_continuous(self) -> NoReturn:
@@ -411,66 +415,71 @@ class ADS1256:
         # TODO(Alex): Discuss with Uli on how to implement this.
         raise NotImplementedError
 
-    def _write_register(self, register: Register) -> None:
+    async def _write_register(self, register: Register) -> None:
         """Write data bytes to the specified registers."""
         data = register.value.to_bytes()
         assert len(data) == register.number_of_bytes  # noqa: S101
         self._write_to_spi(bytes((Commands.WREG | register.address, len(data) - 1)) + data)
         if register.wait_for_auto_calibration() and self.status_register.auto_calibration:
-            asyncio.run(self._wait_data_ready())
+            await self._wait_data_ready()
 
-    def _read_register(self, register: Register) -> None:
+    async def _read_register(self, register: Register) -> None:
         """Get data from remote register."""
         self._write_to_spi(bytes((Commands.RREG | register.address, register.number_of_bytes - 1)))
-        time.sleep(self.conf.DATA_TIMEOUT)
+        await asyncio.sleep(self.conf.DATA_TIMEOUT)
         register.set_value(
             self._read_from_spi(register.number_of_bytes),
         )
 
-    def self_calibration(self) -> None:
+    async def self_calibration(self) -> None:
         """Perform an input zero and full-scale two-point-calibration.
 
         This uses the chip-internal circuitry connected to VREFP and VREFN.
 
         Sets the ADS1255/ADS1256 OFC and FSC registers.
         """
-        self._send_cmd_wait_data_ready(Commands.SELFCAL)
+        async with self.lock:
+            await self._send_cmd_wait_data_ready(Commands.SELFCAL)
 
-    def self_offset_calibration(self) -> None:
+    async def self_offset_calibration(self) -> None:
         """Perform an input zero calibration using chip-internal reference switches.
 
         Sets the ADS1255/ADS1256 OFC register.
         """
-        self._send_cmd_wait_data_ready(Commands.SELFOCAL)
+        async with self.lock:
+            await self._send_cmd_wait_data_ready(Commands.SELFOCAL)
 
-    def self_gain_calibration(self) -> None:
+    async def self_gain_calibration(self) -> None:
         """Perform an input full-scale calibration.
 
         This uses the chip-internal circuitry connected to VREFP and VREFN.
 
         Sets the ADS1255/ADS1256 FSC register.
         """
-        self._send_cmd_wait_data_ready(Commands.SELFGCAL)
+        async with self.lock:
+            await self._send_cmd_wait_data_ready(Commands.SELFGCAL)
 
-    def system_offset_calibration(self) -> None:
+    async def system_offset_calibration(self) -> None:
         """Perform in-system offset calibration.
 
         Set the ADS1255/ADS1256 OFC register such that the
         current input voltage corresponds to a zero output value.
         The input multiplexer must be set to the appropriate pins first.
         """
-        self._send_cmd_wait_data_ready(Commands.SYSOCAL)
+        async with self.lock:
+            await self._send_cmd_wait_data_ready(Commands.SYSOCAL)
 
-    def system_gain_calibration(self) -> None:
+    async def system_gain_calibration(self) -> None:
         """Perform in-system gain calibration.
 
         Set the ADS1255/ADS1256 FSC register such that the current
         input voltage corresponds to a full-scale output value.
         The input multiplexer must be set to the appropriate pins first.
         """
-        self._send_cmd_wait_data_ready(Commands.SYSGCAL)
+        async with self.lock:
+            await self._send_cmd_wait_data_ready(Commands.SYSGCAL)
 
-    def sync(self) -> None:
+    async def sync(self) -> None:
         """Restart the ADC conversion cycle with a SYNC + WAKEUP.
 
         The sequence is described in the ADS1256 datasheet.
@@ -480,16 +489,18 @@ class ADS1256:
         external input multiplexer or after changing ADC configuration
         flags.
         """
-        self._send_cmd(Commands.SYNC)
-        time.sleep(self.conf.SYNC_TIMEOUT)
-        self._send_cmd(Commands.WAKEUP)
-        # Release chip select and implement t_11 timeout
+        async with self.lock:
+            self._send_cmd(Commands.SYNC)
+            await asyncio.sleep(self.conf.SYNC_TIMEOUT)
+            self._send_cmd(Commands.WAKEUP)
+            # Release chip select and implement t_11 timeout
 
-    def standby(self) -> None:
+    async def standby(self) -> None:
         """Put chip in low-power standby mode."""
-        self._send_cmd(Commands.STANDBY)
+        async with self.lock:
+            self._send_cmd(Commands.STANDBY)
 
-    def wakeup(self) -> None:
+    async def wakeup(self) -> None:
         """Wake up the chip from standby mode.
 
         See datasheet for settling time specifications after wake-up.
@@ -500,35 +511,38 @@ class ADS1256:
 
         Call standby() to enter standby mode again.
         """
-        self._send_cmd(Commands.WAKEUP)
+        async with self.lock:
+            self._send_cmd(Commands.WAKEUP)
 
-    def reset(self) -> None:
+    async def reset(self) -> None:
         """Reset all registers except CLK0 and CLK1 bits to default values."""
-        self._send_cmd(Commands.RESET)
+        async with self.lock:
+            self._send_cmd(Commands.RESET)
 
     ################### EXTRA METHODS ##########################################
 
-    def hard_reset(self) -> None:
+    async def hard_reset(self) -> None:
         """Reset by toggling the hardware pin as configured as "RESET_PIN"."""
-        if self.conf.RESET_PIN is None:
-            self.stop_close_all()
-            msg = "Reset pin is not configured!"
-            raise RuntimeError(msg)
-        logger.debug("Performing hard RESET...")
-        self.pi.write(self.conf.RESET_PIN, pigpio.LOW)
-        time.sleep(100e-6)
-        self.pi.write(self.conf.RESET_PIN, pigpio.HIGH)
-        # At hardware initialization, a settling time for the oscillator
-        # is necessary before doing any register access.
-        # This is approx. 30ms, according to the datasheet.
-        time.sleep(0.03)
-        asyncio.run(self._wait_data_ready())
+        async with self.lock:
+            if self.conf.RESET_PIN is None:
+                self.stop_close_all()
+                msg = "Reset pin is not configured!"
+                raise RuntimeError(msg)
+            logger.debug("Performing hard RESET...")
+            self.pi.write(self.conf.RESET_PIN, pigpio.LOW)
+            await asyncio.sleep(100e-6)
+            self.pi.write(self.conf.RESET_PIN, pigpio.HIGH)
+            # At hardware initialization, a settling time for the oscillator
+            # is necessary before doing any register access.
+            # This is approx. 30ms, according to the datasheet.
+            await asyncio.sleep(0.03)
+            await self._wait_data_ready()
 
     def get_pga_gain(self) -> ProgrammableGainAmplifierValues:
         """Get ADC programmable gain amplifier setting."""
         return self.ad_control_register.programmable_gain_amplifier.as_gain()
 
-    def set_pga_gain(self, value: ProgrammableGainAmplifierValues) -> None:
+    async def set_pga_gain(self, value: ProgrammableGainAmplifierValues) -> None:
         """Set ADC programmable gain amplifier setting.
 
         The available options for the ADS1256 are:
@@ -541,10 +555,11 @@ class ADS1256:
         ACAL flag (AUTOCAL_ENABLE), this causes a wait for data ready
         for the calibration process to finish.
         """
-        self.ad_control_register.programmable_gain_amplifier = (
-            ProgrammableGainAmplifierSetting.from_gain(value)
-        )
-        self._write_register(self.ad_control_register)
+        async with self.lock:
+            self.ad_control_register.programmable_gain_amplifier = (
+                ProgrammableGainAmplifierSetting.from_gain(value)
+            )
+            await self._write_register(self.ad_control_register)
 
     def get_v_per_digit(self) -> float:
         """Get ADC LSB weight in volts per numeric output digit.
@@ -558,7 +573,7 @@ class ADS1256:
         """Get value of ADC analog input multiplexer register."""
         return self.input_multiplexer_control_register.value
 
-    def select_input_channels(
+    async def select_input_channels(
         self,
         positive_channel: InputChannelSelect,
         negative_channel: InputChannelSelect,
@@ -569,20 +584,22 @@ class ADS1256:
         as a differential input channel. For single-ended measurements,
         choose NEG_AINCOM as the second input pin.
         """
-        self.input_multiplexer_control_register.positive_input_channel = positive_channel
-        self.input_multiplexer_control_register.negative_input_channel = negative_channel
-        self._write_register(self.input_multiplexer_control_register)
+        async with self.lock:
+            self.input_multiplexer_control_register.positive_input_channel = positive_channel
+            self.input_multiplexer_control_register.negative_input_channel = negative_channel
+            await self._write_register(self.input_multiplexer_control_register)
 
-    def select_input_channel_pair(self, pair: PositiveNegativChannelPair) -> None:
+    async def select_input_channel_pair(self, pair: PositiveNegativChannelPair) -> None:
         """Select a pair of input channels."""
-        self.input_multiplexer_control_register.set_channels(pair)
-        self._write_register(self.input_multiplexer_control_register)
+        async with self.lock:
+            self.input_multiplexer_control_register.set_channels(pair)
+            await self._write_register(self.input_multiplexer_control_register)
 
     def get_data_rate(self) -> DataRateSetting:
         """Get value of the ADC output sample data rate (reads DRATE register)."""
         return self.ad_data_rate_register.data_rate
 
-    def set_data_rate(self, value: DataRateSetting) -> None:
+    async def set_data_rate(self, value: DataRateSetting) -> None:
         """Set value of the ADC output sample data (writes to DRATE register).
 
         This configures the hardware integrated moving average filter.
@@ -593,37 +610,42 @@ class ADS1256:
 
         The available data rates are defined in ADS1256_definitions.py.
         """
-        self.ad_data_rate_register.data_rate = value
-        self._write_register(self.ad_data_rate_register)
+        async with self.lock:
+            self.ad_data_rate_register.data_rate = value
+            await self._write_register(self.ad_data_rate_register)
 
-    def get_ofc(self) -> int:
+    async def get_ofc(self) -> int:
         """Get the offset compensation registers value, reading OFC0..2."""
         # The result is 24 bits little endian two's complement value by default
-        self._read_register(self.offset_calibration_register)
-        return self.offset_calibration_register.value
+        async with self.lock:
+            await self._read_register(self.offset_calibration_register)
+            return self.offset_calibration_register.value
 
-    def set_ofc(self, value: int) -> None:
+    async def set_ofc(self, value: int) -> None:
         """Set the offset compensation registers value, setting OFC0..2."""
-        if value < INT24_MIN or value > INT24_MAX:
-            self.stop_close_all()
-            msg = "Error: Offset value out of signed int24 range"
-            raise ValueError(msg)
-        self.offset_calibration_register.value = value
-        self._write_register(self.offset_calibration_register)
+        async with self.lock:
+            if value < INT24_MIN or value > INT24_MAX:
+                self.stop_close_all()
+                msg = "Error: Offset value out of signed int24 range"
+                raise ValueError(msg)
+            self.offset_calibration_register.value = value
+            await self._write_register(self.offset_calibration_register)
 
-    def get_fsc(self) -> int:
+    async def get_fsc(self) -> int:
         """Get the full-scale adjustment registers value, reading OFC0..2."""
-        self._read_register(self.full_scale_calibration_register)
-        return self.full_scale_calibration_register.value
+        async with self.lock:
+            await self._read_register(self.full_scale_calibration_register)
+            return self.full_scale_calibration_register.value
 
-    def set_fsc(self, value: int) -> None:
+    async def set_fsc(self, value: int) -> None:
         """Set the full-scale adjustment registers value, setting OFC0..2."""
-        if value < 0 or value > INT24_MAX:
-            self.stop_close_all()
-            msg = "Error: Offset value must be positive in signed int24 range."
-            raise ValueError(msg)
-        self.full_scale_calibration_register.value = value
-        self._write_register(self.full_scale_calibration_register)
+        async with self.lock:
+            if value < 0 or value > INT24_MAX:
+                self.stop_close_all()
+                msg = "Error: Offset value must be positive in signed int24 range."
+                raise ValueError(msg)
+            self.full_scale_calibration_register.value = value
+            await self._write_register(self.full_scale_calibration_register)
 
     def get_chip_id(self) -> int:
         """Get the numeric ID from the ADS chip.
@@ -632,7 +654,7 @@ class ADS1256:
         """
         return self.status_register.chip_id
 
-    def read_one_shot(self) -> int:
+    async def read_one_shot(self) -> int:
         """Read one value from the ADC and send it back to sleep.
 
         Returns:    Signed integer conversion result for currently selected channel.
@@ -640,15 +662,17 @@ class ADS1256:
         Use this function after putting the device into standby.
         Then one conversion is done, and afterwards the device goes back to standby.
         """
-        self._send_cmd(Commands.WAKEUP)
-        value = self.read_data()
-        self.standby()
-        return value
+        async with self.lock:
+            self._send_cmd(Commands.WAKEUP)
+            value = await self.read_data()
+            await self.standby()
+            return value
 
-    def read_sequence(self, input_pairs: Iterable[PositiveNegativChannelPair]) -> list[int]:
+    async def read_sequence(self, input_pairs: Iterable[PositiveNegativChannelPair]) -> list[int]:
         """Read a sequence of input channel pairs."""
-        out: list[int] = []
-        for pair in input_pairs:
-            self.select_input_channel_pair(pair)
-            out.append(self.read_data())
-        return out
+        async with self.lock:
+            out: list[int] = []
+            for pair in input_pairs:
+                await self.select_input_channel_pair(pair)
+                out.append(await self.read_data())
+            return out
