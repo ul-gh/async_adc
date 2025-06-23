@@ -23,18 +23,18 @@ class Register(ABC):
 
     value: int = 0
 
-    _wait_for_autocal: bool = False
-    """If this is set to true, there should be a wait done to wait for the autocalibration."""
+    _wait_for_auto_calibration: bool = False
+    """If this is set to true, there should be a wait done to wait for the auto calibration."""
 
     def set_value(self, raw_data: bytearray) -> None:
         """Update local properties to be in sync with remote register."""
         self.value = int.from_bytes(raw_data)
 
     @property
-    def wait_for_autocal(self) -> bool:
-        """Determine if wait for autocalibration is set and reset value."""
-        value = self._wait_for_autocal
-        self._wait_for_autocal = False
+    def wait_for_auto_calibration(self) -> bool:
+        """Determine if wait for auto calibration is set and reset value."""
+        value = self._wait_for_auto_calibration
+        self._wait_for_auto_calibration = False
         return value
 
 
@@ -58,7 +58,7 @@ class StatusRegister(Register):
     def analog_buffer(self, value: bool) -> None:
         self.value &= 0b11111101
         self.value |= int(value) << 1
-        self._wait_for_autocal = True
+        self._wait_for_auto_calibration = True
 
     @property
     def auto_calibration(self) -> bool:
@@ -69,7 +69,7 @@ class StatusRegister(Register):
     def auto_calibration(self, value: bool) -> None:
         self.value &= 0b11111011
         self.value |= int(value) << 2
-        self._wait_for_autocal = True
+        self._wait_for_auto_calibration = True
 
     @property
     def order_msb_first(self) -> bool:
@@ -126,7 +126,7 @@ class InputMultiplexerControlRegister(Register):
 
 
 @final
-class AdControllRegister(Register):
+class AdControlRegister(Register):
     """A/D Control Register."""
 
     address = 0x02
@@ -140,7 +140,7 @@ class AdControllRegister(Register):
     def programmable_gain_amplifier(self, value: ProgrammableGainAmplifierSetting) -> None:
         self.value &= 0b00000111
         self.value |= value
-        self._wait_for_autocal = True
+        self._wait_for_auto_calibration = True
 
     @property
     def sensor_detect_current(self) -> SensorDetectCurrentSources:
@@ -183,7 +183,7 @@ class AdDataRateRegister(Register):
     @data_rate.setter
     def data_rate(self, value: DataRateSetting) -> None:
         self.value = value
-        self._wait_for_autocal = True
+        self._wait_for_auto_calibration = True
 
 
 @final

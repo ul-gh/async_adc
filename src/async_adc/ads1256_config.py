@@ -42,7 +42,7 @@ class ADS1256Config(BaseModel):
     # 0 for main SPI bus, 1 for auxiliary SPI bus.
     SPI_BUS: Literal[0, 1] = 0
 
-    # Only releveant when using hardware chip select.
+    # Only relevant when using hardware chip select.
     # TODO(Uli): Not implemented
     # This determines which chip select pin is activated for this chip.
     # Main SPI has CS 0 and 1. Aux SPI has 0, 1, 2
@@ -67,9 +67,9 @@ class ADS1256Config(BaseModel):
     # Raspberry Pi pinning uses Broadcom numbering scheme.
 
     # Tuple of all (chip select) GPIO numbers to be configured as an output and
-    # initialised to (inactive) logic high state before bus communication starts.
+    # initialized to (inactive) logic high state before bus communication starts.
     # Necessary for more than one SPI device if GPIOs are not otherwise handled.
-    CHIP_SELECT_GPIOS_INITIALIZE: tuple[int, ...] = (22, 23)
+    CHIP_SELECT_GPIO_S_INITIALIZE: tuple[int, ...] = (22, 23)
 
     # Chip select GPIO pin number.
     # Only relevant when using bit-banging chip-select mode.
@@ -77,7 +77,7 @@ class ADS1256Config(BaseModel):
     CS_PIN: int | None = 22
 
     # If DRDY is not connected to an input, a sufficient DRDY_TIMEOUT must be
-    # specified further below and aquisition will be slower.
+    # specified further below and acquisition will be slower.
     DRDY_PIN: int | None = 17
 
     # Hardware reset pin is optional but strongly suggested in case multiple devices
@@ -103,15 +103,15 @@ class ADS1256Config(BaseModel):
     # to (AVDD-2V),see datasheet
     buffer_enable: bool = True
 
-    # TODO(Alex): Autocalibration gets set no where, does this need to be enabled?
+    # TODO(Alex): Auto calibration gets set no where, does this need to be enabled somewhere?
 
     # REG_MUX:
     # Default: positive input = AIN0, negative input = AINCOM
-    positve_input_channel: InputChannelSelect = InputChannelSelect.AIN0
+    positive_input_channel: InputChannelSelect = InputChannelSelect.AIN0
     negative_input_channel: InputChannelSelect = InputChannelSelect.AINCOM
 
     # REG_ADCON:
-    # Gain seting of the integrated programmable amplifier. This value must be
+    # Gain setting of the integrated programmable amplifier. This value must be
     # one of 1, 2, 4, 8, 16, 32, 64.
     # Gain = 1, V_ref = 2.5V ==> full-scale input voltage = 5.00V, corresponding
     # to a 24-bit two's complement output value of 2**23 - 1 = 8388607
@@ -123,7 +123,7 @@ class ADS1256Config(BaseModel):
 
     # REG_DRATE:
     # 10 SPS places a filter zero at 50 Hz and 60 Hz for line noise rejection
-    drate: DataRateSetting = DataRateSetting.DRATE_10
+    data_rate: DataRateSetting = DataRateSetting.DRATE_10
 
     # REG_IO: No ADS1256 GPIOs needed
     gpio: int = 0x00

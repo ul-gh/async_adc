@@ -86,7 +86,7 @@ class InputChannelSelect(enum.IntEnum):
             raise TypeError(msg)
         if value & cls.AINCOM:
             return cls(cls.AINCOM)
-        # mask of all higher bits and initialzie normally
+        # mask of all higher bits and initialize normally
         return cls(value & 0x07)
 
 
@@ -139,7 +139,7 @@ class ProgrammableGainAmplifierSetting(enum.IntEnum):
     def from_gain(cls, data: ProgrammableGainAmplifierValues) -> Self:
         """Get an Programmable Gain Amplifier Setting from an int value.
 
-        Necessary, becuase valid integer values are only the 2**x up until x=6.
+        Necessary, because valid integer values are only the 2**x up until x=6.
         """
         log2val = int.bit_length(data) - 1
         return cls(log2val)

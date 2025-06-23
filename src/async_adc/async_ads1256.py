@@ -19,7 +19,7 @@ from async_adc.ads1256_definitions import (
     ProgrammableGainAmplifierValues,
 )
 from async_adc.registers import (
-    AdControllRegister,
+    AdControlRegister,
     AdDataRateRegister,
     FullScaleCalibrationRegister,
     GpioControlRegister,
@@ -70,7 +70,7 @@ class ADS1256:
 
     status_register: StatusRegister
     input_multiplexer_control_register: InputMultiplexerControlRegister
-    ad_control_register: AdControllRegister
+    ad_control_register: AdControlRegister
     ad_data_rate_register: AdDataRateRegister
     gpio_control_register: GpioControlRegister
     offset_calibration_register: OffsetCalibrationRegister
@@ -114,7 +114,7 @@ class ADS1256:
         self.open_spi_handles.append(self.spi_handle)
         logger.debug("Obtained SPI device handle: %s", self.spi_handle)
 
-    def _configure_gpios(self) -> None:
+    def _configure_gpio_s(self) -> None:
         """Configure GPIOs.
 
         For configuration of multiple SPI devices on this bus:
@@ -123,7 +123,7 @@ class ADS1256:
         level from the beginning. CS for all chips are given in config:
         Initializing all other chip select lines as input every time.
         """
-        for pin in self.conf.CHIP_SELECT_GPIOS_INITIALIZE:
+        for pin in self.conf.CHIP_SELECT_GPIO_S_INITIALIZE:
             self._init_input(pin, pigpio.PUD_UP, "chip select")
 
         # In addition to the CS pins of other devices of the bus, init CS for this chip
@@ -132,10 +132,10 @@ class ADS1256:
                 self.stop_close_all()
                 msg = "CS pin already used. Must be exclusive!"
                 raise ValueError(msg)
-            if self.conf.CS_PIN not in self.conf.CHIP_SELECT_GPIOS_INITIALIZE:
+            if self.conf.CS_PIN not in self.conf.CHIP_SELECT_GPIO_S_INITIALIZE:
                 msg = (
                     "Chip select pins for all devices on the bus must be"
-                    "listed in config: CHIP_SELECT_GPIOS_INITIALIZE"
+                    f"listed in config: {self.conf.CHIP_SELECT_GPIO_S_INITIALIZE=}"
                 )
                 raise ValueError(msg)
             self.exclusive_pins_used.add(self.conf.CS_PIN)
@@ -165,7 +165,7 @@ class ADS1256:
         """Configure ADC registers."""
         self.status_register = StatusRegister()
         self.input_multiplexer_control_register = InputMultiplexerControlRegister()
-        self.ad_control_register = AdControllRegister()
+        self.ad_control_register = AdControlRegister()
         self.ad_data_rate_register = AdDataRateRegister()
         self.gpio_control_register = GpioControlRegister()
         self.offset_calibration_register = OffsetCalibrationRegister()
@@ -175,7 +175,7 @@ class ADS1256:
             self.conf.negative_input_channel
         )
         self.input_multiplexer_control_register.positive_input_channel = (
-            self.conf.positve_input_channel
+            self.conf.positive_input_channel
         )
         self._write_register(self.input_multiplexer_control_register)
 
@@ -184,7 +184,7 @@ class ADS1256:
         self.ad_control_register.programmable_gain_amplifier = self.conf.pga_gain
         self._write_register(self.ad_control_register)
 
-        self.ad_data_rate_register.data_rate = self.conf.drate
+        self.ad_data_rate_register.data_rate = self.conf.data_rate
         self._write_register(self.ad_data_rate_register)
 
         # Status register written last as this can re-trigger ADC conversion
@@ -210,7 +210,7 @@ class ADS1256:
         self.data_ready = asyncio.Event()
 
         # Configure interfaces
-        self._configure_gpios()
+        self._configure_gpio_s()
         self._configure_spi()
         # Device reset for defined initial state
         if self.conf.CHIP_HARD_RESET_ON_START:
@@ -277,12 +277,12 @@ class ADS1256:
             self.pi.write(pin, init_state)
             self.pins_initialized.add(pin)
 
-    def _init_input(self, pin: int, pullup_mode: int = pigpio.PUD_UP, name: str = "input") -> None:
+    def _init_input(self, pin: int, pull_up_mode: int = pigpio.PUD_UP, name: str = "input") -> None:
         if pin not in self.pins_initialized:
             msg = "Setting as output: %s (%s)"
             logger.debug(msg, pin, name)
             self.pi.set_mode(pin, pigpio.INPUT)
-            self.pi.set_pull_up_down(pin, pullup_mode)
+            self.pi.set_pull_up_down(pin, pull_up_mode)
             self.pins_initialized.add(pin)
 
     def _write_to_spi(self, bytes_out: bytes) -> None:
@@ -299,19 +299,19 @@ class ADS1256:
 
     def _read_from_spi(self, number_of_read_bytes: int) -> bytearray:
         self._chip_select()
-        n_inbytes: int
+        n_input_bytes: int
         # pigpio library has wrong return type (str instead of bytearray) in case no bytes are read
-        inbytes: bytearray | Literal[""]
-        n_inbytes, inbytes = self.pi.spi_read(  # pyright:ignore[reportAny]
+        input_bytes: bytearray | Literal[""]
+        n_input_bytes, input_bytes = self.pi.spi_read(  # pyright:ignore[reportAny]
             handle=self.spi_handle,
             count=number_of_read_bytes,
         )
         # Release chip select and implement t_11 timeout
         self._chip_release()
-        if n_inbytes < number_of_read_bytes or not isinstance(inbytes, bytearray):
+        if n_input_bytes < number_of_read_bytes or not isinstance(input_bytes, bytearray):
             msg = "Read invalid data via SPI."
             raise OSError(msg)
-        return inbytes
+        return input_bytes
 
     ################### Context Manager ########################################
 
@@ -368,16 +368,16 @@ class ADS1256:
         previously set /and stable/ input channel configuration.
 
         For the default, free-running mode of the ADC, this means
-        invalid data is returned when not synchronising acquisition
+        invalid data is returned when not synchronizing acquisition
         and input channel configuration changes.
 
         To avoid this, after changing input channel configuration or
         with an external hardware multiplexer, use the hardware SYNC
         input pin or use the sync() method to restart the
-        conversion cycle before calling read_async().
+        conversion cycle before calling this function.
 
         Because this function does not implicitly restart a running
-        acquisition, it is faster that the read_oneshot() method.
+        acquisition, it is faster that the read_one_shot() method.
         """
         # Wait for data to be ready
         asyncio.run(self._wait_data_ready())
@@ -389,14 +389,14 @@ class ADS1256:
 
     @contextmanager
     def read_data_continuous(self) -> NoReturn:
-        """Read Data Continous Mode.
+        """Read Data Continuous Mode.
 
         ``Not yet implemented!``
         """
         # There are multiple different ways this could be implemented. Either through the use of an
         # Iterator, for example each new value will result in an yield. Problem is, this couldn't
         # be stopped. Another way this could be used is through the use of an context manager,
-        # where inside of the context manager the ADC gets put into Continous mode
+        # where inside of the context manager the ADC gets put into Continuous mode
         # and on exit it gets stopped. That way this would give an pythonic so to speak way of
         # interacting with the adc.
         # TODO(Alex): Discuss with Uli on how to implement this.
@@ -407,7 +407,7 @@ class ADS1256:
         data = register.value.to_bytes()
         assert len(data) == register.number_of_bytes  # noqa: S101
         self._write_to_spi(bytes((Commands.WREG | register.address, len(data))) + data)
-        if self.status_register.auto_calibration and register.wait_for_autocal:
+        if self.status_register.auto_calibration and register.wait_for_auto_calibration:
             asyncio.run(self._wait_data_ready())
 
     def _read_register(self, register: Register) -> None:
@@ -486,7 +486,7 @@ class ADS1256:
         See datasheet for settling time specifications after wake-up.
         Data is ready when the DRDY pin becomes active low.
 
-        You can then use the read_oneshot() function to read a new
+        You can then use the read_one_shot() function to read a new
         sample of input data.
 
         Call standby() to enter standby mode again.
@@ -509,7 +509,7 @@ class ADS1256:
         self.pi.write(self.conf.RESET_PIN, pigpio.LOW)
         time.sleep(100e-6)
         self.pi.write(self.conf.RESET_PIN, pigpio.HIGH)
-        # At hardware initialisation, a settling time for the oscillator
+        # At hardware initialization, a settling time for the oscillator
         # is necessary before doing any register access.
         # This is approx. 30ms, according to the datasheet.
         time.sleep(0.03)
@@ -529,7 +529,7 @@ class ADS1256:
         defined in file ADS1256_definitions.py.
 
         Note: When changing the gain setting at runtime, with activated
-        ACAL flag (AUTOCAL_ENABLE), this causes a _wait_drdy() timeout
+        ACAL flag (AUTOCAL_ENABLE), this causes a wait for data ready
         for the calibration process to finish.
         """
         self.ad_control_register.programmable_gain_amplifier = (
@@ -569,11 +569,11 @@ class ADS1256:
         self.input_multiplexer_control_register.set_channels(pair)
         self._write_register(self.input_multiplexer_control_register)
 
-    def get_drate(self) -> DataRateSetting:
+    def get_data_rate(self) -> DataRateSetting:
         """Get value of the ADC output sample data rate (reads DRATE register)."""
         return self.ad_data_rate_register.data_rate
 
-    def set_drate(self, value: DataRateSetting) -> None:
+    def set_data_rate(self, value: DataRateSetting) -> None:
         """Set value of the ADC output sample data (writes to DRATE register).
 
         This configures the hardware integrated moving average filter.
@@ -623,7 +623,7 @@ class ADS1256:
         """
         return self.status_register.chip_id
 
-    def read_oneshot(self) -> int:
+    def read_one_shot(self) -> int:
         """Read one value from the ADC and send it back to sleep.
 
         Returns:    Signed integer conversion result for currently selected channel.
