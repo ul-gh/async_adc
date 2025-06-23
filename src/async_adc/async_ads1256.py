@@ -243,14 +243,13 @@ class ADS1256:
         (ACAL flag), after every access that changes the PGA gain bits in
         ADCON register, the DRATE register or the BUFFEN flag in status register.
         """
-        start = time.time()
-        elapsed = time.time() - start
         # Waits for DRDY pin to go to active low or _DRDY_TIMEOUT seconds to pass
         if self.conf.DRDY_PIN is not None:
             self.data_ready.clear()
-            _ = await self.data_ready.wait()
-            if elapsed >= self.conf.DRDY_TIMEOUT:
-                logger.warning("Timeout while polling configured DRDY pin!")
+            try:
+                _ = await asyncio.wait_for(self.data_ready.wait(), self.conf.DRDY_TIMEOUT)
+            except TimeoutError:
+                logger.exception("Timeout while waiting for DRDY pin to go low!")
         else:
             _ = await asyncio.sleep(self.conf.DRDY_TIMEOUT)
 
