@@ -405,13 +405,13 @@ class ADS1256:
         """Write data bytes to the specified registers."""
         data = register.value.to_bytes()
         assert len(data) == register.number_of_bytes  # noqa: S101
-        self._write_to_spi(bytes((Commands.WREG | register.address, len(data))) + data)
-        if self.status_register.auto_calibration and register.wait_for_auto_calibration:
+        self._write_to_spi(bytes((Commands.WREG | register.address, len(data) - 1)) + data)
+        if register.wait_for_auto_calibration() and self.status_register.auto_calibration:
             asyncio.run(self._wait_data_ready())
 
     def _read_register(self, register: Register) -> None:
         """Get data from remote register."""
-        self._write_to_spi(bytes((Commands.RREG | register.address, register.number_of_bytes)))
+        self._write_to_spi(bytes((Commands.RREG | register.address, register.number_of_bytes - 1)))
         time.sleep(self.conf.DATA_TIMEOUT)
         register.set_value(
             self._read_from_spi(register.number_of_bytes),
