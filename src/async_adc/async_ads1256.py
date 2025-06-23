@@ -31,7 +31,7 @@ from async_adc.registers import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator, Iterable
+    from collections.abc import AsyncGenerator, Callable, Generator, Iterable, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -680,11 +680,36 @@ class ADS1256:
             await self.standby()
             return value
 
-    async def read_sequence(self, input_pairs: Iterable[PositiveNegativChannelPair]) -> list[int]:
+    async def read_iterator(
+        self,
+        input_pairs: Iterable[PositiveNegativChannelPair],
+    ) -> AsyncGenerator[int]:
         """Read a sequence of input channel pairs."""
         async with self.lock:
-            out: list[int] = []
-            for pair in input_pairs:
-                await self.select_input_channel_pair(pair)
-                out.append(await self.read_data())
-            return out
+            iterator = iter(input_pairs)
+            try:
+                pair = next(iterator)
+            except StopIteration as exception:
+                msg = "Empty Iterable was given"
+                raise ValueError(msg) from exception
+            with self._select_chip():
+                self.input_multiplexer_control_register.set_channels(pair)
+                await self._write_register(self.input_multiplexer_control_register)
+                self._send_cmd(Commands.SYNC)
+                await asyncio.sleep(self.conf.SYNC_TIMEOUT)
+                self._send_cmd(Commands.WAKEUP)
+                await asyncio.sleep(self.conf.SYNC_TIMEOUT)
+
+                for pair in iterator:
+                    await self._wait_data_ready()
+                    self.input_multiplexer_control_register.set_channels(pair)
+                    await self._write_register(self.input_multiplexer_control_register)
+                    self._send_cmd(Commands.SYNC)
+                    await asyncio.sleep(self.conf.SYNC_TIMEOUT)
+                    self._send_cmd(Commands.WAKEUP)
+                    await asyncio.sleep(self.conf.SYNC_TIMEOUT)
+                    yield await self._read_data()
+
+    async def read_sequence(self, input_pairs: Sequence[PositiveNegativChannelPair]) -> list[int]:
+        """Read a sequence of defined input output channel pairs."""
+        return [i async for i in self.read_iterator(input_pairs)]
