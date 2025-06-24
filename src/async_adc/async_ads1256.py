@@ -384,7 +384,11 @@ class ADS1256:
         # Set input pin mux position for this cycle"
         self.pi.spi_write(
             self.spi_handle,
-            (Commands.WREG | Registers.MUX, 0x00, diff_channel, Commands.SYNC),
+            # For WREG and RREG commands, the number of additional data bytes
+            # to be transmitted - 1 must be sent with the command.
+            # This sends two command bytes and two data bytes. Second command
+            # byte is 0x01 for two data bytes to be transmitted.
+            (Commands.WREG | Registers.MUX, 0x01, diff_channel, Commands.SYNC),
         )
         time.sleep(conf.SYNC_TIMEOUT)
         self.pi.spi_write(self.spi_handle, (Commands.WAKEUP,))
@@ -467,7 +471,11 @@ class ADS1256:
         # Setting mux position for next cycle"
         self.pi.spi_write(
             handle=self.spi_handle,
-            data=(Commands.WREG | Registers.MUX, 0x00, diff_channel, Commands.SYNC),
+            # For WREG and RREG commands, the number of additional data bytes
+            # to be transmitted - 1 must be sent with the command.
+            # This sends two command bytes and two data bytes. Second command
+            # byte is 0x01 for two data bytes to be transmitted.
+            data=(Commands.WREG | Registers.MUX, 0x01, diff_channel, Commands.SYNC),
         )
         time.sleep(conf.SYNC_TIMEOUT)
         self.pi.spi_write(handle=self.spi_handle, data=(Commands.WAKEUP,))
@@ -660,7 +668,7 @@ class ADS1256:
     def _read_reg_bytes(self, register_start: int, count: int = 1) -> bytearray:
         """Return data bytes from the specified registers."""
         self._chip_select()
-        self.pi.spi_write(handle=self.spi_handle, data=(Commands.RREG | register_start, count))
+        self.pi.spi_write(handle=self.spi_handle, data=(Commands.RREG | register_start, count - 1))
         time.sleep(conf.DATA_TIMEOUT)
         n_inbytes: int
         # pigpio library has wrong return type (str instead of bytearray) in case no bytes are read
@@ -676,7 +684,9 @@ class ADS1256:
     def _write_reg_bytes(self, register_start: int, data: bytes) -> None:
         """Write data bytes to the specified registers."""
         self._chip_select()
-        bytes_out = bytes((Commands.WREG | register_start, len(data))) + data
+        # For WREG and RREG commands, the number of additional data bytes
+        # to be transmitted - 1 must be sent with the command.
+        bytes_out = bytes((Commands.WREG | register_start, len(data) - 1)) + data
         self.pi.spi_write(handle=self.spi_handle, data=bytes_out)
         # Release chip select and implement t_11 timeout
         self._chip_release()
