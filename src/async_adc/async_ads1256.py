@@ -118,7 +118,7 @@ class ADS1256:
         self.open_spi_handles.append(self.spi_handle)
         logger.debug("Obtained SPI device handle: %s", self.spi_handle)
 
-    def _configure_gpio_s(self) -> None:
+    def _configure_gpios(self) -> None:
         """Configure GPIOs.
 
         For configuration of multiple SPI devices on this bus:
@@ -127,7 +127,7 @@ class ADS1256:
         level from the beginning. CS for all chips are given in config:
         Initializing all other chip select lines as input every time.
         """
-        for pin in self.conf.CHIP_SELECT_GPIO_S_INITIALIZE:
+        for pin in self.conf.CHIP_SELECT_GPIOS_INITIALIZE:
             self._init_input(pin, pigpio.PUD_UP, "chip select")
 
         # In addition to the CS pins of other devices of the bus, init CS for this chip
@@ -136,10 +136,10 @@ class ADS1256:
                 self.stop_close_all()
                 msg = "CS pin already used. Must be exclusive!"
                 raise ValueError(msg)
-            if self.conf.CS_PIN not in self.conf.CHIP_SELECT_GPIO_S_INITIALIZE:
+            if self.conf.CS_PIN not in self.conf.CHIP_SELECT_GPIOS_INITIALIZE:
                 msg = (
                     "Chip select pins for all devices on the bus must be"
-                    f"listed in config: {self.conf.CHIP_SELECT_GPIO_S_INITIALIZE=}"
+                    f"listed in config: {self.conf.CHIP_SELECT_GPIOS_INITIALIZE=}"
                 )
                 raise ValueError(msg)
             self.exclusive_pins_used.add(self.conf.CS_PIN)
@@ -216,7 +216,7 @@ class ADS1256:
         self.chip_selected = False
 
         # Configure interfaces
-        self._configure_gpio_s()
+        self._configure_gpios()
         self._configure_spi()
         # Device reset for defined initial state
         if self.conf.CHIP_HARD_RESET_ON_START:

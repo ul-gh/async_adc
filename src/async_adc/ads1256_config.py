@@ -27,10 +27,8 @@ from async_adc.ads1256_definitions import (
 
 logger = logging.getLogger(__name__)
 
-CONFIG_FILE_PATH = (
-    Path.home()
-    .joinpath(f".{__package__}" if __package__ is not None else ".async_adc")
-    .joinpath("ads1256_config.toml")
+CONFIG_FOLDER_PATH = Path.home().joinpath(
+    f".{__package__}" if __package__ is not None else ".async_adc",
 )
 
 
@@ -69,7 +67,7 @@ class ADS1256Config(BaseModel):
     # Tuple of all (chip select) GPIO numbers to be configured as an output and
     # initialized to (inactive) logic high state before bus communication starts.
     # Necessary for more than one SPI device if GPIOs are not otherwise handled.
-    CHIP_SELECT_GPIO_S_INITIALIZE: tuple[int, ...] = (22, 23)
+    CHIP_SELECT_GPIOS_INITIALIZE: tuple[int, ...] = (22, 23)
 
     # Chip select GPIO pin number.
     # Only relevant when using bit-banging chip-select mode.
@@ -167,15 +165,17 @@ class ADS1256Config(BaseModel):
     T_11_TIMEOUT: float = 1e-6 + 4.0 / CLKIN_FREQUENCY
 
 
-def init_or_read_from_config_file(*, init: bool = False) -> ADS1256Config:
+def init_or_read_from_config_file(config_file_name: str, *, init: bool = False) -> ADS1256Config:
     """Read or initialize configuration file and return config data object."""
-    conf = ADS1256Config.model_validate(tomllib.loads(CONFIG_FILE_PATH.open("r").read()))
-    if init or not CONFIG_FILE_PATH.is_file():
-        CONFIG_FILE_PATH.parent.mkdir(exist_ok=True)
+    conf = ADS1256Config.model_validate(
+        tomllib.loads(CONFIG_FOLDER_PATH.joinpath(config_file_name).open("r").read()),
+    )
+    if init or not CONFIG_FOLDER_PATH.joinpath(config_file_name).is_file():
+        CONFIG_FOLDER_PATH.mkdir(exist_ok=True)
         # Workaround flattening enums to support TOML output.
-        _ = toml.dump(conf.model_dump(), CONFIG_FILE_PATH.open("w"))
+        _ = toml.dump(conf.model_dump(), CONFIG_FOLDER_PATH.joinpath(config_file_name).open("w"))
         msg = "Configuration initialized using file: %s\n==> Please check or edit this file NOW!"
-        logger.log(logging.INFO if init else logging.ERROR, msg, CONFIG_FILE_PATH)
+        logger.log(logging.INFO if init else logging.ERROR, msg, CONFIG_FOLDER_PATH)
         sys.exit(0 if init else 1)
 
     return conf
@@ -183,4 +183,4 @@ def init_or_read_from_config_file(*, init: bool = False) -> ADS1256Config:
 
 if __name__ == "__main__":
     # For testing purposes, init config file when this module is run as a script
-    _ = init_or_read_from_config_file(init=True)
+    _ = init_or_read_from_config_file("ads1256_config.toml", init=True)
