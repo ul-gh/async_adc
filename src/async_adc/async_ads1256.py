@@ -394,8 +394,6 @@ class ADS1256:
         time.sleep(conf.SYNC_TIMEOUT)
         self.pi.spi_write(self.spi_handle, (Commands.WAKEUP,))
         self._wait_drdy()
-        # Read data from ADC, which still returns the /previous/ conversion
-        # result from before changing inputs
         self.pi.spi_write(self.spi_handle, (Commands.RDATA,))
         time.sleep(conf.DATA_TIMEOUT)
         n_inbytes: int
@@ -408,7 +406,7 @@ class ADS1256:
         # Result is 24 bits int, transmitted with big endian bit and byte order
         return int.from_bytes(inbytes, byteorder="big", signed=True)
 
-    def read_result(self) -> int | None:
+    def read_result_immediately(self) -> int | None:
         """Read previously started ADC conversion result.
 
         Arguments:  None
@@ -417,14 +415,13 @@ class ADS1256:
         Issue this command to read a single conversion result for a
         previously set /and stable/ input channel configuration.
 
-        For the default, free-running mode of the ADC, this means
-        invalid data is returned when not synchronising acquisition
-        and input channel configuration changes.
+        BEWARE: Invalid data is returned when not synchronising acquisition
+        and read-out timing.
 
         To avoid this, after changing input channel configuration or
         with an external hardware multiplexer, use the hardware SYNC
         input pin or use the sync() method to restart the
-        conversion cycle before calling read_async().
+        conversion cycle before calling read_result_immediately().
 
         Because this function does not implicitly restart a running
         acquisition, it is faster that the read_oneshot() method.
