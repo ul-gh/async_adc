@@ -150,7 +150,7 @@ class ADS1256:
                 self.stop_close_all()
                 msg = "Config error: DRDY pin already used. Must be exclusive!"
                 raise ValueError(msg)
-            self._init_input(self.conf.DRDY_PIN, pigpio.PUD_DOWN, "data ready")
+            self._init_input(self.conf.DRDY_PIN, pigpio.PUD_UP, "data ready")
             self.data_ready_callback = self.pi.callback(
                 self.conf.DRDY_PIN,
                 pigpio.EITHER_EDGE,
