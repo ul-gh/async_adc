@@ -386,10 +386,11 @@ class ADS1256:
             self.spi_handle,
             # For WREG and RREG commands, the number of additional data bytes
             # to be transmitted - 1 must be sent with the command.
-            # This sends two command bytes and one data byte for the WREG command.
-            # After that, a SYNC command is sent independently from first command.
-            (Commands.WREG | Registers.MUX, 0x00, diff_channel, Commands.SYNC),
+            # This sends two command bytes and only one data byte so number is 0x00
+            (Commands.WREG | Registers.MUX, 0x00, diff_channel),
         )
+        time.sleep(conf.T_11_TIMEOUT)
+        self.pi.spi_write(self.spi_handle, (Commands.SYNC,))
         time.sleep(conf.SYNC_TIMEOUT)
         self.pi.spi_write(self.spi_handle, (Commands.WAKEUP,))
         self._wait_drdy()
@@ -470,21 +471,22 @@ class ADS1256:
         self._wait_drdy()
         # Setting mux position for next cycle"
         self.pi.spi_write(
-            handle=self.spi_handle,
+            self.spi_handle,
             # For WREG and RREG commands, the number of additional data bytes
             # to be transmitted - 1 must be sent with the command.
-            # This sends two command bytes and one data byte for the WREG command.
-            # After that, a SYNC command is sent independently from first command.
-            data=(Commands.WREG | Registers.MUX, 0x00, diff_channel, Commands.SYNC),
+            # This sends two command bytes and only one data byte so number is 0x00
+            (Commands.WREG | Registers.MUX, 0x00, diff_channel),
         )
+        time.sleep(conf.T_11_TIMEOUT)
+        self.pi.spi_write(self.spi_handle, (Commands.SYNC,))
         time.sleep(conf.SYNC_TIMEOUT)
-        self.pi.spi_write(handle=self.spi_handle, data=(Commands.WAKEUP,))
+        self.pi.spi_write(self.spi_handle, (Commands.WAKEUP,))
         # The datasheet is a bit unclear if a t_11 timeout is needed here.
         # Assuming the extra timeout is the safe choice:
         time.sleep(conf.T_11_TIMEOUT)
         # Read data from ADC, which still returns the /previous/ conversion
         # result from before changing inputs
-        self.pi.spi_write(handle=self.spi_handle, data=(Commands.RDATA,))
+        self.pi.spi_write(self.spi_handle, (Commands.RDATA,))
         time.sleep(conf.DATA_TIMEOUT)
         n_inbytes: int
         # pigpio library has wrong return type (str instead of bytearray) in case no bytes are read
@@ -687,7 +689,7 @@ class ADS1256:
         # For WREG and RREG commands, the number of additional data bytes
         # to be transmitted - 1 must be sent with the command.
         bytes_out = bytes((Commands.WREG | register_start, len(data) - 1)) + data
-        self.pi.spi_write(handle=self.spi_handle, data=bytes_out)
+        self.pi.spi_write(self.spi_handle, bytes_out)
         # Release chip select and implement t_11 timeout
         self._chip_release()
 
