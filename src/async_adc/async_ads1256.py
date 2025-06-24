@@ -386,9 +386,9 @@ class ADS1256:
             self.spi_handle,
             # For WREG and RREG commands, the number of additional data bytes
             # to be transmitted - 1 must be sent with the command.
-            # This sends two command bytes and two data bytes. Second command
-            # byte is 0x01 for two data bytes to be transmitted.
-            (Commands.WREG | Registers.MUX, 0x01, diff_channel, Commands.SYNC),
+            # This sends two command bytes and one data byte for the WREG command.
+            # After that, a SYNC command is sent independently from first command.
+            (Commands.WREG | Registers.MUX, 0x00, diff_channel, Commands.SYNC),
         )
         time.sleep(conf.SYNC_TIMEOUT)
         self.pi.spi_write(self.spi_handle, (Commands.WAKEUP,))
@@ -473,9 +473,9 @@ class ADS1256:
             handle=self.spi_handle,
             # For WREG and RREG commands, the number of additional data bytes
             # to be transmitted - 1 must be sent with the command.
-            # This sends two command bytes and two data bytes. Second command
-            # byte is 0x01 for two data bytes to be transmitted.
-            data=(Commands.WREG | Registers.MUX, 0x01, diff_channel, Commands.SYNC),
+            # This sends two command bytes and one data byte for the WREG command.
+            # After that, a SYNC command is sent independently from first command.
+            data=(Commands.WREG | Registers.MUX, 0x00, diff_channel, Commands.SYNC),
         )
         time.sleep(conf.SYNC_TIMEOUT)
         self.pi.spi_write(handle=self.spi_handle, data=(Commands.WAKEUP,))
